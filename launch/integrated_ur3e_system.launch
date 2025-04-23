@@ -1,0 +1,24 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="robot_ip" default="192.168.0.194" doc="IP address of the UR3e robot"/>
+  <arg name="gripper_ip" default="192.168.0.194" doc="IP address of the OnRobot gripper"/>
+  <arg name="robot_model" default="ur3e" doc="Model of the UR robot"/>
+  <arg name="onrobot_model" default="rg2" doc="Model of the OnRobot gripper"/>
+  <arg name="gripper_controller" default="joint_position" doc="Controller type for the gripper"/>
+  
+  <!-- Launch UR3e robot driver -->
+  <include file="$(find ur_robot_driver)/launch/ur3e_bringup.launch">
+    <arg name="robot_ip" value="$(arg robot_ip)"/>
+  </include>
+  
+  <!-- Launch MoveIt for UR3e -->
+  <include file="$(find ur3e_moveit_config)/launch/ur3e_moveit_planning_execution.launch"/>
+  
+  <!-- Launch OnRobot RG gripper -->
+  <include file="$(find ur_onrobot)/launch/ur_onrobot_rg_bringup.launch">
+    <arg name="robot_model" value="$(arg robot_model)"/>
+    <arg name="onrobot_model" value="$(arg onrobot_model)"/>
+    <arg name="robot_ip" value="$(arg gripper_ip)"/>
+    <arg name="gripper_controller" value="$(arg gripper_controller)"/>
+  </include>
+</launch>

@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+
+import rospy
+import cv2
+import numpy as np
+import math
+from sensor_msgs.msg import Image, CameraInfo
+from cv_bridge import CvBridge, CvBridgeError
+from geometry_msgs.msg import PointStamped
+import tf2_ros
+import message_filters
+
+class CubeDetectorWithCameraParams:
+    def __init__(self):
+        # Initialize ROS node
+        rospy.init_node('color_cube_detector', anonymous=True)
+        
+        # Define the camera position in world frame (from XML)
+        # These are used for world coordinate calculation
+        self.camera_position = {'x': 0.0, 'y': 0.5, 'z': 1.0}
+        
+        # Create a CV bridge
+        self.bridge = CvBridge()
+        
+        # Create TF2 buffer and listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        
+        # Camera parameters
+        self.camera_matrix = None
+        self.distortion_coeffs = None
+        self.camera_frame = None
+        
+        # Color ranges in HSV
+        self.red_lower1 = np.array([0, 100, 80])
+        self.red_upper1 = np.array([15, 255, 255])
+        self.red_lower2 = np.array([160, 100, 80])
+        self.red_upper2 = np.array([180, 255, 255])
+        
+        self.green_lower = np.array([35, 100, 80])
+        self.green_upper = np.array([85, 255, 255])
+        
+        self.blue_lower = np.array([95, 100, 80])
+        self.blue_upper = np.array([145, 255, 255])
+        
+        # Detection parameters
+        self.min_contour_area = 80
+        self.min_aspect_ratio = 0.6
+        self.max_aspect_ratio = 1.6
+        self.max_cubes_per_color = 3
+        self.detection_seq = 0
+        
+        # Publishers
+        self.image_pub = rospy.Publisher("/cube_detection/image", Image, queue_size=10)
+        self.red_pub = rospy.Publisher("/detected_cubes/red", PointStamped, queue_size=10)
+        self.green_pub = rospy.Publisher("/detected_cubes/green", PointStamped, queue_size=10)
+        self.blue_pub = rospy.Publisher("/detected_cubes/blue", PointStamped, queue_size=10)
+        
+        # Setup synchronized subscribers for image and camera_info
+        image_sub = message_filters.Subscriber("/ur3/camera1/image_raw", Image)
+        camera_info_sub = message_filters.Subscriber("/ur3/camera1/camera_info", CameraInfo)
+        
+        # Use approximate time synchronization
+        ts = message_filters.ApproximateTimeSynchronizer([image_sub, camera_info_sub], 10, 0.1)
+        ts.registerCallback(self.synchronized_callback)
+        
+        rospy.loginfo("Cube Detector with Camera Parameters initialized!")
+    
+    def process_camera_info(self, camera_info):
+        """Extract camera parameters from CameraInfo message"""
+        self.camera_matrix = np.reshape(camera_info.K, (3, 3))
+        self.distortion_coeffs = np.array(camera_info.D)
+        self.camera_frame = camera_info.header.frame_id
+        self.projection_matrix = np.reshape(camera_info.P, (3, 4))
+        self.rectification_matrix = np.reshape(camera_info.R, (3, 3))
+        
+        # Log camera parameters
+        rospy.logdebug("Camera Matrix (K):\n{}".format(self.camera_matrix))
+        rospy.logdebug("Distortion Coefficients (D): {}".format(self.distortion_coeffs))
+        rospy.logdebug("Camera Frame: {}".format(self.camera_frame))
+    
+    def synchronized_callback(self, image_msg, camera_info_msg):
+        """Process synchronized image and camera_info messages"""
+        # Update camera parameters
+        self.process_camera_info(camera_info_msg)
+        
+        try:
+            # Convert ROS image to OpenCV format
+            cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
+            original_image = cv_image.copy()
+        except CvBridgeError as e:
+            rospy.logerr("CvBridge Error: {0}".format(e))
+            return
+        
+        # Increment sequence number
+        self.detection_seq += 1
+        
+        # Process the image to detect cubes
+        processed_image, cube_positions = self.detect_cubes(cv_image, original_image)
+        
+        # Publish positions of all detected cubes
+        header = image_msg.header
+        header.seq = self.detection_seq
+        
+        # Publish detected positions for each color
+        for color, positions in cube_positions.items():
+            pub = getattr(self, f"{color}_pub")
+            for i, pos in enumerate(positions):
+                msg = PointStamped()
+                msg.header = header
+                msg.point.x = pos[0]  # x in image
+                msg.point.y = pos[1]  # y in image
+                msg.point.z = 0  # no depth information from single camera
+                pub.publish(msg)
+                
+                # Calculate world coordinates if possible
+                if self.camera_matrix is not None:
+                    # Log image coordinates
+                    rospy.loginfo(f"Detected {color} cube at image position: ({pos[0]:.1f}, {pos[1]:.1f})")
+        
+        # Publish the processed image
+        try:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(processed_image, "bgr8"))
+        except CvBridgeError as e:
+            rospy.logerr("CvBridge Error: {0}".format(e))
+    
+    def detect_cubes(self, image, original_image):
+        """Detect colored cubes in the image"""
+        # Apply preprocessing
+        blurred = cv2.GaussianBlur(image, (5, 5), 0)
+        hsv_image = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+        
+        # Create binary masks for each color
+        red_mask1 = cv2.inRange(hsv_image, self.red_lower1, self.red_upper1)
+        red_mask2 = cv2.inRange(hsv_image, self.red_lower2, self.red_upper2)
+        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+        
+        green_mask = cv2.inRange(hsv_image, self.green_lower, self.green_upper)
+        blue_mask = cv2.inRange(hsv_image, self.blue_lower, self.blue_upper)
+        
+        # Apply morphological operations
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+        
+        green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
+        green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, kernel)
+        
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Edge detection
+        gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 30, 150)
+        
+        # Find cubes of each color
+        cube_positions = {}
+        cube_positions['red'] = self.find_cubes(red_mask, original_image, edges, (0, 0, 255), "Red")
+        cube_positions['green'] = self.find_cubes(green_mask, original_image, edges, (0, 255, 0), "Green")
+        cube_positions['blue'] = self.find_cubes(blue_mask, original_image, edges, (255, 0, 0), "Blue")
+        
+        # Draw coordinate axes to show image frame directions
+        self.draw_coordinate_axes(original_image)
+        
+        # Draw world coordinate reference
+        self.draw_world_reference(original_image)
+        
+        return original_image, cube_positions
+        
+    def draw_coordinate_axes(self, image):
+        """Draw coordinate axes to show the image frame directions"""
+        # Define origin point (upper left corner with some offset)
+        origin = (50, 50)
+        
+        # Define axis lengths
+        axis_length = 100
+        
+        # Draw X-axis (red arrow pointing right)
+        cv2.arrowedLine(image, origin, (origin[0] + axis_length, origin[1]), 
+                         (0, 0, 255), 2, tipLength=0.2)
+        cv2.putText(image, "X (u)", (origin[0] + axis_length - 30, origin[1] - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # Draw Y-axis (green arrow pointing down)
+        cv2.arrowedLine(image, origin, (origin[0], origin[1] + axis_length), 
+                         (0, 255, 0), 2, tipLength=0.2)
+        cv2.putText(image, "Y (v)", (origin[0] - 40, origin[1] + axis_length - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # Add coordinate system label
+        cv2.putText(image, "Image Frame", (origin[0] - 20, origin[1] - 15), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Add note about image coordinate system
+        cv2.putText(image, "Origin (0,0) at top-left", (origin[0] - 40, origin[1] + axis_length + 25), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+    def draw_world_reference(self, image):
+        """Draw a reference diagram showing world coordinate system"""
+        # Position in bottom left of image
+        origin = (50, image.shape[0] - 100)
+        
+        # Define axis lengths
+        axis_length = 50
+        
+        # Draw world X-axis (red) - pointing up
+        cv2.arrowedLine(image, origin, (origin[0], origin[1] - axis_length), 
+                         (0, 0, 255), 2, tipLength=0.2)
+        cv2.putText(image, "X", (origin[0] - 20, origin[1] - axis_length + 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # Draw world Y-axis (green) - pointing left
+        cv2.arrowedLine(image, origin, (origin[0] - axis_length, origin[1]), 
+                         (0, 255, 0), 2, tipLength=0.2)
+        cv2.putText(image, "Y", (origin[0] - axis_length - 15, origin[1] - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # Draw world Z-axis (blue, pointing out of the screen)
+        cv2.circle(image, origin, 10, (255, 0, 0), -1)
+        cv2.circle(image, origin, 10, (255, 255, 255), 1)
+        cv2.putText(image, "Z", (origin[0] + 15, origin[1] + 15), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        
+        # Add world coordinate system label
+        cv2.putText(image, "World Frame (Gazebo)", (origin[0] - 40, origin[1] + 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Add note about world coordinate system rotation
+        cv2.putText(image, "Gazebo: X up, Y left", (origin[0] - 50, origin[1] + 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        # Add camera position info
+        camera_pos = f"Camera: ({self.camera_position['x']}, {self.camera_position['y']}, {self.camera_position['z']})"
+        cv2.putText(image, camera_pos, (origin[0] - 30, origin[1] + 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    
+    def find_cubes(self, mask, image, edges, color, label):
+        """Find cubes of a specific color"""
+        # Find contours in the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Store scores and info for each contour
+        scored_contours = []
+        
+        # Score each contour
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            
+            # Skip small contours
+            if area < self.min_contour_area:
+                continue
+            
+            # Approximate the contour
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            
+            # Cubes should have a polygon with 4-6 points after approximation
+            if len(approx) < 4 or len(approx) > 8:
+                continue
+            
+            # Get a rectangle around the contour
+            rect = cv2.minAreaRect(contour)
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            
+            # Get the rotation angle of the rectangle
+            # rect returns (center(x,y), (width,height), angle)
+            angle = rect[2]
+            
+            # OpenCV returns angle in range [-90, 0) for angles counterclockwise from horizontal
+            # and in range [0, 90) for angles clockwise from horizontal
+            
+            # Get width and height to determine if we need to adjust angle by 90 degrees
+            width = rect[1][0]
+            height = rect[1][1]
+            
+            # If width < height, the angle should be adjusted by 90 degrees
+            # because OpenCV gives the angle of the longer side
+            if width < height:
+                angle += 90
+                
+            # Normalize angle to [0, 180)
+            if angle < 0:
+                angle += 180
+                
+            # Transform the angle to match the world coordinate system
+            # This may need calibration based on your specific setup
+            world_angle = angle
+            
+            # Check aspect ratio
+            if width <= 0 or height <= 0:
+                continue
+                
+            aspect_ratio = max(width, height) / min(width, height)
+            if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
+                continue
+            
+            # Calculate center using moments
+            M = cv2.moments(contour)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                
+                # Create a squareness score
+                squareness_score = 1.0 - min(1.0, abs(1.0 - aspect_ratio) / 0.6)
+                area_score = min(1.0, area / 3000.0)
+                
+                # Combined score
+                score = area_score * 0.5 + squareness_score * 0.5
+                
+                # Add to scored contours list
+                scored_contours.append({
+                    'contour': contour,
+                    'box': box,
+                    'center': (cx, cy),
+                    'score': score,
+                    'area': area,
+                    'angle': world_angle,
+                    'rect': rect
+                })
+        
+        # Sort contours by score (highest first)
+        scored_contours.sort(key=lambda c: c['score'], reverse=True)
+        
+        # Take the top N contours as cubes
+        detected_positions = []
+        
+        # Function to check if new detection is too close to existing ones
+        def is_too_close(pos, existing_positions, min_distance=30):
+            for ex_pos in existing_positions:
+                dist = np.sqrt((pos[0] - ex_pos[0])**2 + (pos[1] - ex_pos[1])**2)
+                if dist < min_distance:
+                    return True
+            return False
+        
+        # Process top scoring contours
+        for c in scored_contours[:10]:  # Check up to 10 candidates
+            if len(detected_positions) >= self.max_cubes_per_color:
+                break
+                
+            # Skip if too close to already detected cube
+            if is_too_close(c['center'], detected_positions):
+                continue
+                
+            # Draw the contour and bounding box
+            cv2.drawContours(image, [c['box']], 0, color, 2)
+            
+            # Draw center point
+            cx, cy = c['center']
+            cv2.circle(image, (cx, cy), 5, color, -1)
+            
+            # Draw orientation line
+            angle_rad = math.radians(c['angle'])
+            line_length = 30
+            end_x = int(cx + line_length * math.cos(angle_rad))
+            end_y = int(cy + line_length * math.sin(angle_rad))
+            cv2.line(image, (cx, cy), (end_x, end_y), color, 2)
+            
+            # Draw label with coordinates
+            # cv2.putText(image, f"{label}: ({cx}, {cy})", (cx - 20, cy - 20),
+                        # cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Add angle information
+            # cv2.putText(image, f"Angle: {c['angle']:.1f}°", (cx - 20, cy - 40),
+                        # cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Add to detected positions
+            detected_positions.append(c['center'])
+            
+            # Print debug info
+            rospy.logdebug(f"Detected {label} cube at position: ({cx}, {cy}) with score: {c['score']:.2f}")
+            
+            # If camera matrix is available, calculate the normalized coordinates
+            if self.camera_matrix is not None:
+                # Convert pixel coordinates to normalized coordinates
+                fx = self.camera_matrix[0, 0]
+                fy = self.camera_matrix[1, 1]
+                cx_cam = self.camera_matrix[0, 2]
+                cy_cam = self.camera_matrix[1, 2]
+                
+                # Calculate normalized coordinates
+                x_norm = (cx - cx_cam) / fx
+                y_norm = (cy - cy_cam) / fy
+                
+                # Calculate world coordinates assuming Z=0 and camera position from XML
+                # Ray from camera: X_cam = x_norm * Z, Y_cam = y_norm * Z, Z_cam = Z
+                # Find intersection with Z=0 plane
+                Z = -self.camera_position['z']  # Z_world = Z_cam + camera_z = 0
+                
+                # Calculate temp coordinates in camera frame
+                X_temp = x_norm * Z
+                Y_temp = y_norm * Z
+                
+                # Calculate world coordinates matching the observed cube coordinates
+                X_world = -(-X_temp + self.camera_position['x'])
+                Y_world = Y_temp + self.camera_position['y']
+                
+                # Calculate gripper angle in world coordinates
+                # This transforms the image angle to world frame
+                gripper_angle = (c['angle'] + 90) % 180
+                
+                # Add normalized coordinates to the image
+                # cv2.putText(image, f"Norm: ({x_norm:.2f}, {y_norm:.2f})", (cx - 20, cy + 20),
+                        #    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            
+                # Add world coordinates to the image
+                cv2.putText(image, f"World: ({Y_world:.2f}, {X_world:.2f})", (cx - 20, cy + 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                           
+                # Add gripper angle information
+                cv2.putText(image, f"Gripper: {gripper_angle:.1f}", (cx - 20, cy + 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            
+                # Log the world coordinates and angle
+                rospy.loginfo(f"{label} cube at ({cx}, {cy}) → World: ({X_world:.3f}, {Y_world:.3f}, 0.000), Angle: {gripper_angle:.1f}°")
+                
+        return detected_positions
+
+def main():
+    detector = CubeDetectorWithCameraParams()
+    
+    try:
+        rospy.spin()
+    except KeyboardInterrupt:
+        rospy.loginfo("Shutting down")
+
+if __name__ == '__main__':
+    main()

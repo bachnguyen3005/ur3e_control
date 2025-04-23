@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/dinh/catkin_ws/src/ur3e_control/build/devel/setup.sh
