@@ -1,16 +1,10 @@
 import cv2
 import numpy as np
 import argparse
+from ultralytics import YOLO
+import math
 
 def detect_shapes_and_colors(image, target_object, roi_offset=(0, 0)):
-    """
-    Improved function to detect shapes and colors in the image
-    
-    Parameters:
-    image -- The image to process
-    target_object -- The type of object to detect ('red_circle', 'blue_triangle', etc.)
-    roi_offset -- Tuple (x, y) representing the offset of the ROI in the original image
-    """
     # Make a copy of the original image
     original = image.copy()
     result = image.copy()
@@ -363,7 +357,206 @@ def detect_shapes_and_colors(image, target_object, roi_offset=(0, 0)):
     
     return result, detected_squares
 
+def detect_shapes_and_colors_yolo(image, target_object, model_path="/home/dinh/catkin_ws/src/ur3e_control/scripts/object_detection.pt", conf_threshold=0.75):
+    # Make a copy of the original image
+    original = image.copy()
+    result = image.copy()
+    all_detected_objects = []
+    detected_squares = []
+    
+    # Load the YOLO model
+    model = YOLO(model_path, task='detect')
+    
+    # Run inference on the image
+    results = model(image, conf=conf_threshold)[0]
+    print("DEBUG result: ", results)
+    
+    # Process results to extract detected objects
+    detected_red_circle = None
+    detected_blue_triangle = None
+    detected_blue_square = None
+    detected_red_square = None
+    detected_yellow_square = None
+    
+    # Extract detections from YOLO results
+    for detection in results.boxes.data.tolist():
+        x1, y1, x2, y2, conf, cls = detection
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # Get class name from the YOLO model
+        class_name = results.names[int(cls)]
+        
+        # Calculate center and area
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        width = x2 - x1
+        height = y2 - y1
+        area = width * height
+        
+        # Extract color and shape from class_name (assuming format like "red_circle")
+        # Check if space is in class name (e.g., "Blue square")
+        if " " in class_name:
+            color, shape = class_name.split(" ", 1)
+            # Preserve original capitalization from YOLO model
+        else:
+            # Fallback for unexpected format
+            color = "Unknown"
+            shape = class_name
+        
+        # Create contour from bounding box for consistency with original function
+        contour = np.array([
+            [[x1, y1]],
+            [[x2, y1]],
+            [[x2, y2]],
+            [[x1, y2]]
+        ], dtype=np.int32)
+        
+        # Create object dict with same structure as original function
+        obj = {
+            'color': color,
+            'shape': shape,
+            'area': area,
+            'contour': contour,
+            'approx': contour,  # Use same contour as approximation for simplicity
+            'cx': cx,
+            'cy': cy,
+            'global_cx': cx,  # No ROI in this function, so local = global
+            'global_cy': cy,
+            'vertices': 4,  # Default for bounding box
+            'circularity': 0.0,  # Not calculated for YOLO
+            'compactness': 0.0,  # Not calculated for YOLO
+            'solidity': 1.0,  # Not calculated for YOLO
+            'aspect_ratio': width / height if height != 0 else 1.0,
+            'confidence': conf  # YOLO confidence score
+        }
+        
+        # Add to detected objects based on class
+        if class_name == "Red circle" and (target_object == "red_circle" or target_object == "all"):
+            detected_red_circle = obj
+            all_detected_objects.append(obj)
+        
+        elif class_name == "Blue triangle" and (target_object == "blue_triangle" or target_object == "all"):
+            detected_blue_triangle = obj
+            all_detected_objects.append(obj)
+        
+        elif class_name == "Blue square" and (target_object == "blue_square" or target_object == "all"):
+            detected_blue_square = obj
+            all_detected_objects.append(obj)
+        
+        elif class_name == "Red square" and (target_object == "red_square" or target_object == "all"):
+            detected_red_square = obj
+            all_detected_objects.append(obj)
+        
+        elif class_name == "Yellow square" and (target_object == "yellow_square" or target_object == "all"):
+            detected_yellow_square = obj
+            all_detected_objects.append(obj)
+    
+    # Get image dimensions
+    h, w = image.shape[:2]
+    
+    # Draw detections based on target_object
+    if target_object == "red_circle" and detected_red_circle:
+        draw_contour(result, detected_red_circle)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Red circle: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_red_circle)
 
+    elif target_object == "blue_triangle" and detected_blue_triangle:
+        draw_contour(result, detected_blue_triangle)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Blue triangle: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_blue_triangle)
+    
+    elif target_object == "blue_square" and detected_blue_square:
+        draw_contour(result, detected_blue_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Blue square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_blue_square)
+    
+    elif target_object == "red_square" and detected_red_square:
+        draw_contour(result, detected_red_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Red square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_red_square)
+    
+    elif target_object == "yellow_square" and detected_yellow_square:
+        draw_contour(result, detected_yellow_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Yellow square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_yellow_square)
+        
+        # Calculate and visualize grasp orientation for yellow square
+        yaw_angle = calculate_center_grasp_orientation(detected_yellow_square)
+        result = visualize_center_grasp(result, detected_yellow_square, yaw_angle)
+        print(f"Yellow square center grasp yaw angle: {yaw_angle} degrees")
+    
+    elif target_object == "all":
+        # Draw all detected objects
+        if detected_blue_square:
+            draw_contour(result, detected_blue_square)
+            display_center_coordinates(result, detected_blue_square)
+            
+        if detected_blue_triangle:
+            draw_contour(result, detected_blue_triangle)
+            display_center_coordinates(result, detected_blue_triangle)
+
+        if detected_red_circle:
+            draw_contour(result, detected_red_circle)
+            display_center_coordinates(result, detected_red_circle)
+
+        if detected_red_square:
+            draw_contour(result, detected_red_square)
+            display_center_coordinates(result, detected_red_square)
+            
+        if detected_yellow_square:
+            draw_contour(result, detected_yellow_square)
+            display_center_coordinates(result, detected_yellow_square)
+    
+    # Handle object not found cases
+    if target_object == "red_circle" and not detected_red_circle:
+        cv2.putText(result, "Red circle: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "blue_triangle" and not detected_blue_triangle:
+        cv2.putText(result, "Blue triangle: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "blue_square" and not detected_blue_square:
+        cv2.putText(result, "Blue square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "red_square" and not detected_red_square:
+        cv2.putText(result, "Red square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "yellow_square" and not detected_yellow_square:
+        cv2.putText(result, "Yellow square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    
+
+    print("All detected objects:", [(obj['color'], obj['shape']) for obj in all_detected_objects])
+    
+    # Extract detected squares for return value
+    for obj in all_detected_objects:
+        if 'square' in obj['shape'].lower():
+            # Extract color and coordinates
+            color = obj['color'].lower()  # Convert to lowercase for consistency
+            cx = obj['global_cx']
+            cy = obj['global_cy']
+            
+            # Add to detected_squares list as a tuple (x, y, color)
+            detected_squares.append((cx, cy, color))
+            print(f"Added square: {color} at ({cx}, {cy})")
+    
+    print("Extracted squares:", detected_squares)
+    
+    return result, detected_squares
 
 def display_center_coordinates(image, obj):
     """Display the center coordinates of an object on the image with improved visibility.
