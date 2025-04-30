@@ -282,8 +282,8 @@ if __name__ == "__main__":
     image_path = "/home/dinh/catkin_ws/src/ur3e_control/calibration_images.jpg"
     
     # Example 1: Map a single point
-    pixel_x = 379
-    pixel_y = 153
+    pixel_x = 324
+    pixel_y = 296
     
     try:
         result = map_pixel_to_robot_frame(

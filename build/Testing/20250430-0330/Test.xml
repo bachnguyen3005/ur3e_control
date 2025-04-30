@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="(empty)"
+	BuildStamp="20250430-0330-Experimental"
+	Name="dinh-ThinkPad-P15-Gen-1"
+	Generator="ctest-3.16.3"
+	CompilerName="/usr/bin/c++"
+	CompilerVersion="9.4.0"
+	OSName="Linux"
+	Hostname="dinh-ThinkPad-P15-Gen-1"
+	OSRelease="5.15.0-138-generic"
+	OSVersion="#148~20.04.1-Ubuntu SMP Fri Mar 28 14:32:35 UTC 2025"
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="GenuineIntel"
+	VendorID="Intel Corporation"
+	FamilyID="6"
+	ModelID="165"
+	ProcessorCacheSize="12288"
+	NumberOfLogicalCPU="12"
+	NumberOfPhysicalCPU="6"
+	TotalVirtualMemory="2047"
+	TotalPhysicalMemory="31718"
+	LogicalProcessorsPerPhysical="2"
+	ProcessorClockFrequency="2700"
+	>
+	<Testing>
+		<StartDateTime>Apr 30 23:40 AEST</StartDateTime>
+		<StartTestTime>1746020454</StartTestTime>
+		<TestList/>
+		<EndDateTime>Apr 30 23:40 AEST</EndDateTime>
+		<EndTestTime>1746020454</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

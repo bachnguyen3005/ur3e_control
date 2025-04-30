@@ -2492,9 +2492,9 @@ class CombinedCameraShapeTab:
         """Determine dropoff location based on object color and index"""
         # Predefined dropoff positions - note these are angles in degrees, not a preset name
         dropoff_positions = {
-            "red": [-148.39, -82.65, -111.35, -76.5, 89.96, 33.93],
-            "blue": [-133.7, -88.60, -105.95, -75.93, 90.12, 49.25],
-            "yellow": [-113.7, -121.09, -63.99, -85.32, 90.36, 68.52]
+            "red": [-162.37, -82.71, -111.48, -75.72, 90.03, -72.62],
+            "blue": [-145.41, -89.24, -105.50, -75.17, 90.100, -55.42],
+            "yellow": [-131.68, -96.94, -97.32, -75.65, 90.06, 318.31-360]
         }
         
         # Get position based on color
@@ -2519,6 +2519,11 @@ class CombinedCameraShapeTab:
             capture_image_pose = [-62.71, -88.97, -31.19, 
                            -149.76, 89.85, 27.15]
             
+            self.update_status("Opening gripper...")
+            robot_gui.set_gripper_width("0.1")
+            robot_gui.send_gripper_command()
+            time.sleep(gripper_delay)
+            
             # 2. Move to a pre-pickup pose (slightly above the pickup position)
             self.update_status("Moving to pre-pickup pose...")
             pre_pickup_pose = pickup_pose.copy()  # Create a copy to modify
@@ -2542,7 +2547,7 @@ class CombinedCameraShapeTab:
             robot_gui.set_joint_values(pre_pickup_pose)
             robot_gui.move_robot()
             
-            # 7. Move to pre-dropoff position
+            # # 7. Move to pre-dropoff position
             self.update_status("Moving to pre-dropoff position...")
             pre_dropoff_pose = dropoff_pose.copy()
             pre_dropoff_pose[2] += 20  # Adjust height for pre-dropoff
@@ -2561,10 +2566,10 @@ class CombinedCameraShapeTab:
             robot_gui.send_gripper_command()
             time.sleep(gripper_delay)
             
-            # 10. Move back to pre-dropoff position
-            self.update_status("Moving to post-dropoff position...")
-            robot_gui.set_joint_values(pre_dropoff_pose)
-            robot_gui.move_robot()
+            # # 10. Move back to pre-dropoff position
+            # self.update_status("Moving to post-dropoff position...")
+            # robot_gui.set_joint_values(pre_dropoff_pose)
+            # robot_gui.move_robot()
             
             # 11. Return to intermediate pose
             self.update_status("Returning to intermediate pose...")
