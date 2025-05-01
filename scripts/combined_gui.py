@@ -1263,6 +1263,7 @@ class CombinedCameraShapeTab:
                 # Generate collision-free path for this square
                 self.update_status(f"Generating collision-free path for {color} square...")
                 success, waypoints_df = self.generate_collision_avoidance_path(square_index=i)
+                print("DEBUG waypoint: ", waypoints_df)
                 
                 if not success:
                     self.update_status(f"Failed to generate collision-free path for {color} square")
