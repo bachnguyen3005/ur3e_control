@@ -363,7 +363,7 @@ def detect_shapes_and_colors_yolo(image, target_object, model_path="/home/dinh/c
     result = image.copy()
     all_detected_objects = []
     detected_squares = []
-    
+    detected_circle = []
     # Load the YOLO model
     model = YOLO(model_path, task='detect')
     
@@ -553,10 +553,20 @@ def detect_shapes_and_colors_yolo(image, target_object, model_path="/home/dinh/c
             # Add to detected_squares list as a tuple (x, y, color)
             detected_squares.append((cx, cy, color))
             print(f"Added square: {color} at ({cx}, {cy})")
+            
+        if 'circle' in obj['shape'].lower():
+            # Extract color and coordinates
+            color = obj['color'].lower()  # Convert to lowercase for consistency
+            cx = obj['global_cx']
+            cy = obj['global_cy']
+            
+            # Add to detected_squares list as a tuple (x, y, color)
+            detected_circle.append((cx, cy, color))
+            print(f"Added circle: {color} at ({cx}, {cy})")
     
     print("Extracted squares:", detected_squares)
     
-    return result, detected_squares
+    return result, detected_squares, detected_circle
 
 def display_center_coordinates(image, obj):
     """Display the center coordinates of an object on the image with improved visibility.
@@ -598,8 +608,6 @@ def display_center_coordinates(image, obj):
     cv2.putText(image, text, (text_x, text_y + text_size[1]),
                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        
-    
 def is_square(obj):
     """Check if an object is a square based on multiple features"""
     return ((obj['vertices'] >= 4 and obj['vertices'] <= 6) and 

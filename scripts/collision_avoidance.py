@@ -4,9 +4,9 @@ import math
 import matplotlib.pyplot as plt
 
 # === Inputs ===
-P0 = np.array([0.17445, -0.26278, 0.04])   # start [x, y, z]
-P2 = np.array([-0.315, 0.022, 0.04])       # target [x, y, z]
-C  = np.array([0.036, -0.17, 0.04])       # cylinder obstacle center [x, y, z]
+P0 = np.array([0.17445, -0.26278, 0.04])   # start [x, y, z], cubes position
+P2 = np.array([-0.315, 0.022, 0.04])       # target [x, y, z], drop off position
+C  = np.array([0.036, -0.17, 0.04])       # cylinder obstacle center [x, y, z], ciricle position
 Q0 = np.array([0, 0, 0, 1])                # quaternion [qx, qy, qz, qw]
 
 # === Parameters ===
@@ -122,7 +122,7 @@ xyz  = np.hstack([pts_xy, np.full((N,1), zConstant)])
 quat = np.tile(Q0, (N,1))
 df   = pd.DataFrame(np.hstack([xyz, quat]),
                     columns=['x','y','z','qx','qy','qz','qw'])
-df.to_csv('waypointsMatrix.csv', index=False)
+df.to_csv('scripts/waypointsMatrix.csv', index=False)
 print("Saved waypointsMatrix.csv with columns:", df.columns.tolist())
 
 # === Plot ===

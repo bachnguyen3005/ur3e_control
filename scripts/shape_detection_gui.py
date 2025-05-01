@@ -421,7 +421,7 @@ class ShapeDetectionGUI:
             else:
                 # Process the entire image with YOLO
                 self.update_status("Running YOLO detection on full image...")
-                self.result_image, self.detected_squares = detect_shapes_and_colors_yolo(
+                self.result_image, self.detected_squares, self.detected_circle = detect_shapes_and_colors_yolo(
                     image_to_process, 
                     target, 
                     model_path=self.yolo_model_path
@@ -445,6 +445,10 @@ class ShapeDetectionGUI:
                 self.update_status(f"YOLO detection completed. Found squares: {square_info}")
             else:
                 self.update_status(f"YOLO detection completed for target: {target}. No squares found.")
+            
+            if self.detected_circle:
+                circle_info = ", ".join([f"{color} at ({x},{y})" for x, y, color in self.detected_circle])
+                self.update_status(f"YOLO detection completed. Found circle: {circle_info}")
             
         except Exception as e:
             self.update_status(f"Error during YOLO detection: {str(e)}")
