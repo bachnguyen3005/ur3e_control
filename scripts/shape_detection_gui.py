@@ -8,7 +8,7 @@ from PIL import Image, ImageTk
 import argparse
 
 # Import the shape detection functions
-from shape_color_detection import detect_shapes_and_colors, detect_shapes_and_colors_yolo
+from shape_color_detection import detect_shapes_and_colors, detect_shapes_and_colors_yolo, detect_shapes_and_colors_yolo_seg
 
 class ShapeDetectionGUI:
     def __init__(self, root):
@@ -27,7 +27,7 @@ class ShapeDetectionGUI:
         self.roi_end_y = None
         self.is_drawing_roi = False
         self.current_target = "all"
-        self.yolo_model_path = "/home/dinh/catkin_ws/src/ur3e_control/scripts/object_detection.pt" 
+        self.yolo_model_path = "/home/dinh/catkin_ws/src/ur3e_control/scripts/segment.pt" 
         
         # Create frames
         self.create_frames()
@@ -389,7 +389,7 @@ class ShapeDetectionGUI:
                 
                 # Process the cropped image using YOLO
                 self.update_status("Running YOLO detection on ROI...")
-                cropped_result, self.detected_squares = detect_shapes_and_colors_yolo(
+                cropped_result, self.detected_squares = detect_shapes_and_colors_yolo_seg(
                     cropped, 
                     target, 
                     model_path=self.yolo_model_path
@@ -421,7 +421,7 @@ class ShapeDetectionGUI:
             else:
                 # Process the entire image with YOLO
                 self.update_status("Running YOLO detection on full image...")
-                self.result_image, self.detected_squares, self.detected_circle = detect_shapes_and_colors_yolo(
+                self.result_image, self.detected_squares, self.detected_circle = detect_shapes_and_colors_yolo_seg(
                     image_to_process, 
                     target, 
                     model_path=self.yolo_model_path
@@ -441,7 +441,15 @@ class ShapeDetectionGUI:
             
             # Report detected squares
             if self.detected_squares:
-                square_info = ", ".join([f"{color} at ({x},{y})" for x, y, color in self.detected_squares])
+                square_info_parts = []
+                for square in self.detected_squares:
+                    if len(square) == 4:  # Format with rotation
+                        x, y, color, rotation = square
+                        square_info_parts.append(f"{color} at ({x},{y}), rotation: {rotation:.1f}")
+                    else:  # Original format without rotation
+                        x, y, color = square
+                        square_info_parts.append(f"{color} at ({x},{y})")
+                square_info = ", ".join(square_info_parts)
                 self.update_status(f"YOLO detection completed. Found squares: {square_info}")
             else:
                 self.update_status(f"YOLO detection completed for target: {target}. No squares found.")

@@ -18,7 +18,7 @@ import math
 # Import the specific modules from each application
 # For shape detection GUI
 try:
-    from shape_color_detection import detect_shapes_and_colors, detect_shapes_and_colors_yolo
+    from shape_color_detection import detect_shapes_and_colors, detect_shapes_and_colors_yolo, detect_shapes_and_colors_yolo_seg
 except ImportError:
     print("Warning: shape_color_detection module not found. Shape detection functionality will be limited.")
 
@@ -81,6 +81,7 @@ class CombinedCameraShapeTab:
         self.robot_square_positions = []
         self.robot_circle_positions = []
         self.yolo_model_path = "/home/dinh/catkin_ws/src/ur3e_control/scripts/object_detection.pt"
+        self.custom_yolo_model_path = "/home/dinh/catkin_ws/src/ur3e_control/scripts/segment.pt"
         
         # Variables for camera
         self.pipeline = None
@@ -207,6 +208,14 @@ class CombinedCameraShapeTab:
             state=tk.DISABLED
         )
         self.detect_yolo_button.pack(fill=tk.X, pady=5)
+        
+        self.detect_custom_yolo_button = ttk.Button(
+            self.controls_frame, 
+            text="Detect Shapes with custom YOLO", 
+            command=self.detect_shapes_custom_yolo,
+            state=tk.DISABLED
+        )
+        self.detect_custom_yolo_button.pack(fill=tk.X, pady=5)
         
         # Reset view button
         ttk.Button(self.controls_frame, text="Reset View", command=self.reset_view).pack(fill=tk.X, pady=5)
@@ -396,6 +405,7 @@ class CombinedCameraShapeTab:
             # Enable detection buttons
             self.detect_button.config(state=tk.NORMAL)
             self.detect_yolo_button.config(state=tk.NORMAL)
+            self.detect_custom_yolo_button.config(state=tk.NORMAL)
             
             self.update_status("Image captured and loaded for detection")
             
@@ -433,6 +443,7 @@ class CombinedCameraShapeTab:
                 self.update_status(f"Loaded image: {os.path.basename(file_path)}")
                 self.detect_button.config(state=tk.NORMAL)
                 self.detect_yolo_button.config(state=tk.NORMAL)
+                self.detect_custom_yolo_button.config(state=tk.NORMAL)
                 
             except Exception as e:
                 self.update_status(f"Error loading image: {str(e)}")
@@ -721,6 +732,116 @@ class CombinedCameraShapeTab:
             self.update_status(f"Error during YOLO detection: {str(e)}")
             import traceback
             traceback.print_exc()
+            
+    def detect_shapes_custom_yolo(self):
+        """Run YOLO shape detection on the selected ROI or the entire image"""
+        if self.original_image is None:
+            self.update_status("Please load or capture an image first")
+            return
+        try:
+            # Get the target object
+            target = self.target_var.get()
+            
+            # Check if model file exists
+            if not os.path.isfile(self.custom_yolo_model_path):
+                self.update_status(f"Error: YOLO model not found at {self.custom_yolo_model_path}")
+                return
+            
+            # Create a copy of the original image
+            image_to_process = self.original_image.copy()
+            
+            # If ROI is selected, crop the image
+            if (self.roi_start_x is not None and self.roi_end_x is not None and 
+                self.roi_start_y is not None and self.roi_end_y is not None):
+                
+                # Ensure ROI is within image boundaries
+                h, w = image_to_process.shape[:2]
+                start_x = max(0, min(self.roi_start_x, w-1))
+                start_y = max(0, min(self.roi_start_y, h-1))
+                end_x = max(0, min(self.roi_end_x, w-1))
+                end_y = max(0, min(self.roi_end_y, h-1))
+                
+                # Crop the image
+                cropped = image_to_process[start_y:end_y, start_x:end_x]
+                
+                # Make sure we have a valid crop
+                if cropped.size == 0:
+                    self.update_status("Invalid ROI: zero size after crop")
+                    return
+                
+                # Process the cropped image using YOLO
+                self.update_status("Running custom YOLO detection on ROI...")
+                cropped_result, self.detected_squares, self.detected_circle = detect_shapes_and_colors_yolo_seg(
+                    cropped, 
+                    target, 
+                    model_path=self.custom_yolo_model_path
+                )
+                
+                # Create a full-sized result image
+                self.result_image = image_to_process.copy()
+                
+                # Place the processed cropped region back into the full image
+                self.result_image[start_y:end_y, start_x:end_x] = cropped_result
+                
+                # Draw a rectangle around the ROI in the result image
+                cv2.rectangle(self.result_image, (start_x, start_y), (end_x, end_y), (0, 255, 0), 2)
+                
+                # Add ROI reference text to the full image
+                roi_width = end_x - start_x
+                roi_height = end_y - start_y
+                full_width, full_height = image_to_process.shape[1], image_to_process.shape[0]
+                
+                roi_text = f"ROI: ({start_x}, {start_y}) to ({end_x}, {end_y}), size: {roi_width}x{roi_height}"
+                cv2.putText(self.result_image, roi_text, (10, full_height - 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # Add YOLO model info
+                model_name = os.path.basename(self.yolo_model_path)
+                cv2.putText(self.result_image, f"YOLO Model: {model_name}", (10, full_height - 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+            else:
+                # Process the entire image with YOLO
+                self.update_status("Running custom YOLO detection on full image...")
+                self.result_image, self.detected_squares, self.detected_circle = detect_shapes_and_colors_yolo_seg(
+                    image_to_process, 
+                    target, 
+                    model_path=self.custom_yolo_model_path
+                )
+                
+                # Add YOLO model info
+                h, w = self.result_image.shape[:2]
+                model_name = os.path.basename(self.custom_yolo_model_path)
+                cv2.putText(self.result_image, f"YOLO Model: {model_name}", (10, h - 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+            # Convert result to RGB for display
+            display_result = cv2.cvtColor(self.result_image, cv2.COLOR_BGR2RGB)
+            
+            # Show the result
+            self.show_detection_image(display_result)
+            
+            # Report detected squares
+            if self.detected_squares:
+                square_info = ", ".join([f"{color} at ({x},{y})" for x, y, color in self.detected_squares])
+                self.update_status(f"YOLO detection completed. Found squares: {square_info}")
+                self.map_squares_to_robot_frame()
+                self.pick_place_button.config(state=tk.NORMAL)
+                self.collision_pick_place_button.config(state=tk.NORMAL)
+            else:
+                self.pick_place_button.config(state=tk.DISABLED)
+                self.collision_pick_place_button.config(state=tk.DISABLED)
+                self.update_status(f"YOLO detection completed for target: {target}. No squares found.")
+            
+            if self.detected_circle: 
+                circle_info = ", ".join([f"{color} at ({x},{y})" for x, y, color in self.detected_circle])
+                self.update_status(f"YOLO detection completed. Found circle: {circle_info}")
+                self.map_circle_to_robot_frame()
+        except Exception as e:
+            self.update_status(f"Error during YOLO detection: {str(e)}")
+            import traceback
+            traceback.print_exc()            
+
     
     def update_target(self):
         """Update the current target object"""

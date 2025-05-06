@@ -495,10 +495,6 @@ def detect_shapes_and_colors_yolo(image, target_object, model_path="/home/dinh/c
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         display_center_coordinates(result, detected_yellow_square)
         
-        # Calculate and visualize grasp orientation for yellow square
-        yaw_angle = calculate_center_grasp_orientation(detected_yellow_square)
-        result = visualize_center_grasp(result, detected_yellow_square, yaw_angle)
-        print(f"Yellow square center grasp yaw angle: {yaw_angle} degrees")
     
     elif target_object == "all":
         # Draw all detected objects
@@ -561,6 +557,347 @@ def detect_shapes_and_colors_yolo(image, target_object, model_path="/home/dinh/c
             cy = obj['global_cy']
             
             # Add to detected_squares list as a tuple (x, y, color)
+            detected_circle.append((cx, cy, color))
+            print(f"Added circle: {color} at ({cx}, {cy})")
+    
+    print("Extracted squares:", detected_squares)
+    
+    return result, detected_squares, detected_circle
+
+def detect_shapes_and_colors_yolo_seg(image, target_object, model_path="/home/dinh/catkin_ws/src/ur3e_control/scripts/segment.pt", conf_threshold=0.75):
+    # Make a copy of the original image
+    original = image.copy()
+    result = image.copy()
+    all_detected_objects = []
+    detected_squares = []
+    detected_circle = []
+    
+    # Load the YOLO segmentation model
+    model = YOLO(model_path, task='segment')
+    
+    # Run inference on the image
+    results = model(image, conf=conf_threshold)[0]
+    print("DEBUG result: ", results)
+    
+    # Process results to extract detected objects with segmentation
+    detected_red_circle = None
+    detected_blue_triangle = None
+    detected_blue_square = None
+    detected_red_square = None
+    detected_yellow_square = None
+    
+    def calculate_square_rotation(contour):
+        """
+        Calculate the rotation angle of a square based on its contour.
+        Returns angle in degrees between -90 and 90.
+        """
+        # Find the minimum area rectangle that encloses the contour
+        rect = cv2.minAreaRect(contour)
+        
+        # Get the angle from the rectangle
+        # OpenCV's minAreaRect returns angles in the range [-90, 0)
+        angle = rect[2]
+        
+        # Get the width and height of the rectangle
+        width, height = rect[1]
+        
+        # Adjust the angle based on the rectangle's orientation
+        # We want to determine if the rectangle is rotated more horizontally or vertically
+        if width < height:
+            # If width is less than height, adjust the angle
+            angle = angle - 90
+        
+        # Normalize angle to be between -45 and 45 degrees for square rotation
+        # (since a square rotated by 90 degrees looks the same)
+        if angle < -45:
+            angle = angle + 90
+        elif angle > 45:
+            angle = angle - 90
+            
+        return angle, rect
+    
+    # Extract detections from YOLO results
+    if results.masks is not None:
+        for i, (mask, box) in enumerate(zip(results.masks.data, results.boxes.data)):
+            # Extract box coordinates and class
+            x1, y1, x2, y2, conf, cls = box.tolist()
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
+            # Get class name from the YOLO model
+            class_name = results.names[int(cls)]
+            
+            # Calculate center and area based on box
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
+            width = x2 - x1
+            height = y2 - y1
+            area = width * height
+            
+            # Extract color and shape from class_name
+            if " " in class_name:
+                color, shape = class_name.split(" ", 1)
+            else:
+                color = "Unknown"
+                shape = class_name
+            
+            # Convert mask to numpy array for contour extraction
+            mask_np = mask.cpu().numpy()
+            mask_uint8 = (mask_np * 255).astype(np.uint8)
+            
+            # Find contours from the mask for more accurate shape representation
+            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Use the largest contour
+                contour = max(contours, key=cv2.contourArea)
+                # Calculate rotation angle for shapes
+                rotation_angle = 0
+                min_area_rect = None
+                if 'square' in shape.lower():
+                    rotation_angle, min_area_rect = calculate_square_rotation(contour)
+                    
+                # Calculate properties based on the contour
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    # Use contour centroid for more precise center
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                
+                # Calculate circularity for better shape identification
+                perimeter = cv2.arcLength(contour, True)
+                circularity = 0.0
+                if perimeter > 0:
+                    circularity = 4 * np.pi * cv2.contourArea(contour) / (perimeter * perimeter)
+                
+                # Approximate contour for vertex count
+                epsilon = 0.02 * perimeter
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                vertices = len(approx)
+                
+                # Calculate additional shape properties
+                hull = cv2.convexHull(contour)
+                hull_area = cv2.contourArea(hull)
+                solidity = cv2.contourArea(contour) / hull_area if hull_area > 0 else 0
+                
+                # Create object dict with enhanced properties from segmentation
+                obj = {
+                    'color': color,
+                    'shape': shape,
+                    'area': area,
+                    'contour': contour,
+                    'approx': approx,
+                    'cx': cx,
+                    'cy': cy,
+                    'global_cx': cx,
+                    'global_cy': cy,
+                    'vertices': vertices,
+                    'circularity': circularity,
+                    'compactness': 0.0,  # Not calculated but kept for compatibility
+                    'solidity': solidity,
+                    'aspect_ratio': width / height if height != 0 else 1.0,
+                    'confidence': conf,
+                    'mask': mask_uint8,  # Store the segmentation mask
+                    'rotation_angle': rotation_angle,
+                    'min_area_rect': min_area_rect
+                }
+                
+                # Add to detected objects based on class
+                if class_name == "Red circle" and (target_object == "red_circle" or target_object == "all"):
+                    detected_red_circle = obj
+                    all_detected_objects.append(obj)
+                
+                elif class_name == "Blue triangle" and (target_object == "blue_triangle" or target_object == "all"):
+                    detected_blue_triangle = obj
+                    all_detected_objects.append(obj)
+                
+                elif class_name == "Blue square" and (target_object == "blue_square" or target_object == "all"):
+                    detected_blue_square = obj
+                    all_detected_objects.append(obj)
+                
+                elif class_name == "Red square" and (target_object == "red_square" or target_object == "all"):
+                    detected_red_square = obj
+                    all_detected_objects.append(obj)
+                
+                elif class_name == "Yellow square" and (target_object == "yellow_square" or target_object == "all"):
+                    detected_yellow_square = obj
+                    all_detected_objects.append(obj)
+    
+    # Get image dimensions
+    h, w = image.shape[:2]
+    
+    # Modified draw_contour function for segmentation results
+    def draw_segmentation(img, obj):
+        # Draw the segmentation mask
+        mask_overlay = img.copy()
+        if 'mask' in obj:
+            # Create color for the mask based on the object color with higher opacity
+            if obj['color'].lower() == 'red':
+                color_bgr = (0, 0, 255)  # BGR for red
+            elif obj['color'].lower() == 'blue':
+                # Make blue more visible against dark background
+                color_bgr = (255, 128, 0)  # Brighter blue-orange
+            elif obj['color'].lower() == 'yellow':
+                color_bgr = (0, 255, 255)  # BGR for yellow
+            else:
+                color_bgr = (0, 255, 0)  # Default green
+            
+            # Create colored mask with higher opacity
+            colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
+            mask_resized = cv2.resize(obj['mask'], (w, h))
+            colored_mask[mask_resized > 0] = color_bgr
+            
+            # Increase opacity for better visibility (0.7 instead of 0.5)
+            cv2.addWeighted(colored_mask, 0.3, mask_overlay, 0.7, 0, mask_overlay)
+            
+            # Draw thicker contour outline
+            cv2.drawContours(mask_overlay, [obj['contour']], -1, color_bgr, 3)
+            
+            # Add a white border around the mask for better contrast
+            kernel = np.ones((5,5), np.uint8)
+            dilated_mask = cv2.dilate(mask_resized, kernel, iterations=1)
+            border_mask = dilated_mask - mask_resized
+            mask_overlay[border_mask > 0] = (255, 255, 255)  # White border
+            
+            # Draw center point with larger size
+            cv2.circle(mask_overlay, (obj['cx'], obj['cy']), 7, (255, 255, 255), -1)
+            
+            if 'square' in obj['shape'].lower() and obj['min_area_rect'] is not None:
+                # Get the rotated rectangle
+                box = cv2.boxPoints(obj['min_area_rect']).astype(np.int32)
+                
+                # Draw the rotated rectangle
+                cv2.drawContours(mask_overlay, [box], 0, (0, 255, 255), 2)
+                
+                # Draw a line indicating the orientation
+                center = (obj['cx'], obj['cy'])
+                angle_rad = np.radians(obj['rotation_angle'])
+                length = 50  # Length of the orientation line
+                end_point = (
+                    int(center[0] + length * np.cos(angle_rad)),
+                    int(center[1] + length * np.sin(angle_rad))
+                )
+                cv2.line(mask_overlay, center, end_point, (255, 255, 255), 2)
+                
+                # Add rotation text
+                text = f"{obj['rotation_angle']:.1f}°"
+                cv2.putText(mask_overlay, text, 
+                        (center[0] - 20, center[1] + 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                return mask_overlay
+            
+            return mask_overlay
+    
+        
+        else:
+            # Fallback to original contour drawing if no mask
+            cv2.drawContours(img, [obj['contour']], -1, (0, 255, 0), 2)
+            cv2.circle(img, (obj['cx'], obj['cy']), 5, (255, 255, 255), -1)
+            return img
+        
+
+    
+    # Function to display center coordinates similar to original
+    def display_center_coordinates(img, obj):
+        text = f"{obj['color']} {obj['shape']}: ({obj['cx']}, {obj['cy']})"
+        cv2.putText(img, text, (obj['cx'] + 10, obj['cy']), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+    
+    # Draw detections based on target_object
+    if target_object == "red_circle" and detected_red_circle:
+        result = draw_segmentation(result, detected_red_circle)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Red circle: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_red_circle)
+
+    elif target_object == "blue_triangle" and detected_blue_triangle:
+        result = draw_segmentation(result, detected_blue_triangle)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Blue triangle: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_blue_triangle)
+    
+    elif target_object == "blue_square" and detected_blue_square:
+        result = draw_segmentation(result, detected_blue_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Blue square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_blue_square)
+    
+    elif target_object == "red_square" and detected_red_square:
+        result = draw_segmentation(result, detected_red_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Red square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_red_square)
+    
+    elif target_object == "yellow_square" and detected_yellow_square:
+        result = draw_segmentation(result, detected_yellow_square)
+        status = "Found"
+        color = (0, 255, 0)  # Green for found
+        cv2.putText(result, f"Yellow square: {status}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        display_center_coordinates(result, detected_yellow_square)
+    
+    elif target_object == "all":
+        # Draw all detected objects
+        if detected_blue_square:
+            result = draw_segmentation(result, detected_blue_square)
+            display_center_coordinates(result, detected_blue_square)
+            
+        if detected_blue_triangle:
+            result = draw_segmentation(result, detected_blue_triangle)
+            display_center_coordinates(result, detected_blue_triangle)
+
+        if detected_red_circle:
+            result = draw_segmentation(result, detected_red_circle)
+            display_center_coordinates(result, detected_red_circle)
+
+        if detected_red_square:
+            result = draw_segmentation(result, detected_red_square)
+            display_center_coordinates(result, detected_red_square)
+            
+        if detected_yellow_square:
+            result = draw_segmentation(result, detected_yellow_square)
+            display_center_coordinates(result, detected_yellow_square)
+    
+    # Handle object not found cases (same as original)
+    if target_object == "red_circle" and not detected_red_circle:
+        cv2.putText(result, "Red circle: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "blue_triangle" and not detected_blue_triangle:
+        cv2.putText(result, "Blue triangle: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "blue_square" and not detected_blue_square:
+        cv2.putText(result, "Blue square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "red_square" and not detected_red_square:
+        cv2.putText(result, "Red square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    elif target_object == "yellow_square" and not detected_yellow_square:
+        cv2.putText(result, "Yellow square: Not Found", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    
+    print("All detected objects:", [(obj['color'], obj['shape']) for obj in all_detected_objects])
+    
+    # Extract detected squares and circles for return value (same as original)
+    for obj in all_detected_objects:
+        if 'square' in obj['shape'].lower():
+            color = obj['color'].lower()
+            cx = obj['global_cx']
+            cy = obj['global_cy']
+            rotation = obj['rotation_angle']
+            detected_squares.append((cx, cy, color, rotation))
+            print(f"Added square: {color} at ({cx}, {cy}), rotation: {rotation:.1f}")
+            
+        if 'circle' in obj['shape'].lower():
+            color = obj['color'].lower()
+            cx = obj['global_cx']
+            cy = obj['global_cy']
             detected_circle.append((cx, cy, color))
             print(f"Added circle: {color} at ({cx}, {cy})")
     
@@ -1015,384 +1352,6 @@ def draw_contour(image, obj):
     # Draw center point for all shapes
     cv2.circle(image, (obj['cx'], obj['cy']), 3, (0, 255, 0), -1)
     
-def calculate_center_grasp_orientation(obj):
-    """
-    Calculate the optimal yaw angle for grasping a square at its center.
-    For a UR3e robot, this will be used to set the last joint angle of the end-effector.
-    
-    Parameters:
-    obj -- The detected object dictionary containing contour and shape information
-    
-    Returns:
-    yaw_angle -- The angle in degrees for the end-effector orientation (0-180°)
-    """
-    import cv2
-    import numpy as np
-    
-    # Default yaw angle if we can't calculate
-    default_yaw = 0.0
-    
-    # Make sure we have a contour to work with
-    if 'contour' not in obj:
-        return default_yaw
-    
-    # Get the rotated bounding rectangle of the square
-    rect = cv2.minAreaRect(obj['contour'])
-    _, (width, height), angle = rect
-    
-    # OpenCV's minAreaRect returns angles in the range [-90, 0) for vertical rectangles 
-    # and [0, 90) for horizontal ones
-    
-    # Adjust angle based on square orientation
-    # We want the gripper to align with the edges of the square
-    if width < height:
-        # For a "vertical" rectangle, adjust angle by 90 degrees
-        # This makes the gripper perpendicular to the longest side
-        angle += 90
-    
-    # Normalize angle to 0-180 degrees
-    while angle < 0:
-        angle += 180
-    while angle >= 180:
-        angle -= 180
-        
-    # For squares, we can optimize further to use 0, 45, or 90 degrees
-    # If angle is close to 0, 45, or 90 degrees, snap to those values
-    tolerance = 5  # degrees
-    
-    if abs(angle) < tolerance or abs(angle - 180) < tolerance:
-        angle = 0
-    elif abs(angle - 45) < tolerance or abs(angle - 135) < tolerance:
-        angle = 45
-    elif abs(angle - 90) < tolerance:
-        angle = 90
-    
-    # Further normalize: for symmetric grippers, 0-90 degree range is sufficient
-    if angle > 90:
-        angle -= 90
-    
-    return angle
-
-def visualize_center_grasp(image, obj, yaw_angle):
-    """
-    Visualize the end-effector orientation for grasping at the center of a square.
-    
-    Parameters:
-    image -- The image to draw on
-    obj -- The detected object
-    yaw_angle -- The calculated yaw angle
-    
-    Returns:
-    image -- The image with visualization added
-    """
-    import cv2
-    import numpy as np
-    import math
-    
-    # Get center of the square
-    cx, cy = obj['cx'], obj['cy']
-    
-    # Calculate the size of the visualization based on the object size
-    # We'll use this to draw gripper fingers
-    size = int(min(30, max(15, (obj['area'] ** 0.5) / 3)))
-    
-    # Convert yaw angle to radians
-    angle_rad = math.radians(yaw_angle)
-    
-    # Calculate endpoints for the gripper visualization
-    # Main axis
-    x1 = int(cx - size * 1.5 * math.cos(angle_rad))
-    y1 = int(cy - size * 1.5 * math.sin(angle_rad))
-    x2 = int(cx + size * 1.5 * math.cos(angle_rad))
-    y2 = int(cy + size * 1.5 * math.sin(angle_rad))
-    
-    # Gripper fingers - perpendicular to main axis
-    perp_angle = angle_rad + math.pi/2
-    
-    # Left finger
-    fx1 = int(cx - size * 0.8 * math.cos(perp_angle))
-    fy1 = int(cy - size * 0.8 * math.sin(perp_angle))
-    
-    # Right finger
-    fx2 = int(cx + size * 0.8 * math.cos(perp_angle))
-    fy2 = int(cy + size * 0.8 * math.sin(perp_angle))
-    
-    # Draw main axis
-    cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    
-    # Draw gripper fingers
-    cv2.line(image, (fx1, fy1), (fx2, fy2), (0, 255, 0), 2)
-    
-    # Draw a circle at the center point
-    cv2.circle(image, (cx, cy), 3, (0, 255, 0), -1)
-    
-    # Add text with the angle
-    cv2.putText(image, f"Yaw: {yaw_angle:.1f}°", 
-               (cx - 40, cy + 30),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    
-    return image
-
-# Example usage in your main script:
-"""
-# Inside your detection loop after detecting squares:
-if detected_yellow_square:
-    # Calculate the optimal yaw angle for center grasping
-    yaw_angle = calculate_center_grasp_orientation(detected_yellow_square)
-    
-    # Add visualization to the result image
-    result = visualize_center_grasp(result, detected_yellow_square, yaw_angle)
-    
-    # Print the angle for debugging or logging
-    print(f"Yellow square center grasp yaw angle: {yaw_angle} degrees")
-    
-    # This angle can be used to set the UR3e's last joint when approaching the object
-"""
-
-def calculate_collision_free_grasp(target_square, all_objects, image_shape):
-    """
-    Calculate optimal grasp orientation for a square to avoid collisions with other objects.
-    
-    Parameters:
-    target_square -- The square object we want to grasp
-    all_objects -- List of all detected objects in the scene
-    image_shape -- Tuple (height, width) of the input image
-    
-    Returns:
-    yaw_angle -- Best angle in degrees for collision-free grasping (0-180°)
-    approach_vector -- Vector (dx, dy) indicating the best approach direction
-    score -- Confidence score of the selected approach (higher is better)
-    """
-    import cv2
-    import numpy as np
-    import math
-    
-    # Get target square center and dimensions
-    center_x, center_y = target_square['cx'], target_square['cy']
-    
-    # Extract square orientation from its contour
-    rect = cv2.minAreaRect(target_square['contour'])
-    _, (width, height), base_angle = rect
-    
-    # Normalize base angle similar to previous functions
-    if width < height:
-        base_angle += 90
-    while base_angle < 0:
-        base_angle += 180
-    
-    # Create a list of potential approach angles (0, 45, 90, 135)
-    # These are the 4 primary directions we might approach from
-    potential_angles = [0, 45, 90, 135]
-    
-    # Calculate the gripper width based on target square size
-    square_size = math.sqrt(target_square['area'])
-    gripper_width = min(50, max(30, square_size * 0.8))  # Adjust based on your gripper
-    
-    # Track scores for each approach angle
-    approach_scores = []
-    
-    # Image boundaries
-    img_h, img_w = image_shape[:2]
-    border_margin = 50  # Minimum distance from image edges
-    
-    # Evaluate each potential approach angle
-    for angle in potential_angles:
-        # Convert to radians
-        angle_rad = math.radians(angle)
-        
-        # Calculate approach vector (direction we approach from)
-        dx = math.cos(angle_rad)
-        dy = math.sin(angle_rad)
-        
-        # We'll check for collisions along this vector
-        # Start with a base score
-        score = 100
-        
-        # Penalize if too close to image boundary in approach direction
-        # Check if approaching from this angle would hit the image boundary
-        distance_to_boundary = float('inf')
-        
-        if abs(dx) > 0.001:  # Not vertical
-            if dx > 0:
-                # Approaching from left, check distance to right border
-                distance_to_boundary = min(distance_to_boundary, (img_w - border_margin - center_x) / dx)
-            else:
-                # Approaching from right, check distance to left border
-                distance_to_boundary = min(distance_to_boundary, (border_margin - center_x) / dx)
-                
-        if abs(dy) > 0.001:  # Not horizontal
-            if dy > 0:
-                # Approaching from top, check distance to bottom border
-                distance_to_boundary = min(distance_to_boundary, (img_h - border_margin - center_y) / dy)
-            else:
-                # Approaching from bottom, check distance to top border
-                distance_to_boundary = min(distance_to_boundary, (border_margin - center_y) / dy)
-        
-        # Penalize if close to boundary
-        if distance_to_boundary < 100:
-            score -= (100 - distance_to_boundary)
-            
-        # Check collision with other objects
-        for obj in all_objects:
-            # Skip the target square itself
-            if obj is target_square:
-                continue
-                
-            # Calculate center-to-center vector from target to other object
-            obj_dx = obj['cx'] - center_x
-            obj_dy = obj['cy'] - center_y
-            obj_distance = math.sqrt(obj_dx**2 + obj_dy**2)
-            
-            # Skip if objects are too far away to matter
-            if obj_distance > 200:
-                continue
-                
-            # Calculate the angle between approach vector and object vector
-            # This tells us if the object is in the approach path
-            dot_product = dx * obj_dx + dy * obj_dy
-            approach_len = 1.0  # Unit vector
-            obj_len = obj_distance
-            
-            # Avoid division by zero
-            if obj_len < 0.001:
-                continue
-                
-            # Calculate cosine of angle between vectors
-            cos_angle = dot_product / (approach_len * obj_len)
-            
-            # Clamping to avoid numerical errors
-            cos_angle = max(-1.0, min(1.0, cos_angle))
-            
-            # Calculate angle in degrees
-            angle_between = math.degrees(math.acos(cos_angle))
-            
-            # Calculate the perpendicular distance of the object from the approach line
-            # This tells us if the object would collide with gripper
-            sin_angle = math.sin(math.radians(angle_between))
-            perp_distance = obj_distance * sin_angle
-            
-            # Object is in approach path if angle is small
-            if angle_between < 45 and obj_distance < 150:
-                # Higher penalty for objects directly in path
-                penalty = 80 * (1 - angle_between / 45.0) * (1 - obj_distance / 150.0)
-                score -= penalty
-            
-            # Penalize if object is close to gripper sides when approaching
-            if perp_distance < gripper_width/2 + 10 and angle_between < 90:
-                # Penalty for potential side collisions
-                side_penalty = 50 * (1 - perp_distance / (gripper_width/2 + 10))
-                score -= side_penalty
-        
-        # Bonus for matching square orientation - gripper parallel to square edges
-        orientation_diff = min(
-            abs(angle - base_angle) % 90,
-            abs(angle - (base_angle + 90)) % 90
-        )
-        orientation_bonus = 20 * (1 - orientation_diff / 45.0)
-        score += orientation_bonus
-        
-        # Store score and approach vector
-        approach_scores.append((angle, (dx, dy), max(0, score)))
-    
-    # Sort by score (highest first)
-    approach_scores.sort(key=lambda x: x[2], reverse=True)
-    
-    # Return the best approach
-    best_angle, best_vector, best_score = approach_scores[0]
-    
-    return best_angle, best_vector, best_score
-
-
-def visualize_collision_free_grasp(image, target_square, angle, approach_vector, score):
-    """
-    Visualize the collision-free grasp approach for a square.
-    
-    Parameters:
-    image -- The image to draw on
-    target_square -- The square object to grasp
-    angle -- The calculated grasp angle in degrees
-    approach_vector -- Direction vector (dx, dy) for approach
-    score -- Confidence score of the selected approach
-    
-    Returns:
-    image -- The image with visualization added
-    """
-    import cv2
-    import numpy as np
-    import math
-    
-    cx, cy = target_square['cx'], target_square['cy']
-    dx, dy = approach_vector
-    
-    # Visualization length based on square size
-    square_size = math.sqrt(target_square['area'])
-    viz_length = min(200, max(100, square_size * 3))
-    
-    # Calculate approach line start point (outside the image, in approach direction)
-    start_x = int(cx - dx * viz_length)
-    start_y = int(cy - dy * viz_length)
-    
-    # Calculate end point (center of square)
-    end_x = int(cx)
-    end_y = int(cy)
-    
-    # Draw approach direction with arrow
-    cv2.arrowedLine(image, (start_x, start_y), (end_x, end_y), (0, 255, 0), 2, tipLength=0.1)
-    
-    # Calculate perpendicular vector for gripper width visualization
-    perp_dx = -dy
-    perp_dy = dx
-    
-    # Gripper width based on square size
-    gripper_width = min(50, max(30, square_size * 0.8))
-    
-    # Draw gripper at the end position
-    gripper_1_x = int(cx + perp_dx * gripper_width/2)
-    gripper_1_y = int(cy + perp_dy * gripper_width/2)
-    gripper_2_x = int(cx - perp_dx * gripper_width/2)
-    gripper_2_y = int(cy - perp_dy * gripper_width/2)
-    
-    # Draw gripper width
-    cv2.line(image, (gripper_1_x, gripper_1_y), (gripper_2_x, gripper_2_y), (0, 255, 0), 2)
-    
-    # Add angle and score information
-    cv2.putText(image, f"Yaw: {angle:.1f}°", (cx - 50, cy + 30), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    cv2.putText(image, f"Score: {score:.0f}", (cx - 50, cy + 50), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    
-    return image
-
-# Example usage in your main code:
-"""
-# After detecting all objects (squares, etc.):
-all_detected_objects = []  # List of all detected objects
-
-# For example, after detecting yellow squares:
-if yellow_squares_list:  # Assuming you have multiple detected squares
-    # Select a target square (e.g., the first one)
-    target_square = yellow_squares_list[0]
-    
-    # Calculate collision-free grasp
-    best_angle, approach_vector, score = calculate_collision_free_grasp(
-        target_square, 
-        all_detected_objects,
-        image.shape
-    )
-    
-    # Visualize the result
-    result = visualize_collision_free_grasp(
-        result, 
-        target_square, 
-        best_angle, 
-        approach_vector, 
-        score
-    )
-    
-    print(f"Best grasp angle: {best_angle}° with score {score}")
-    # Use best_angle to set the UR3e's last joint
-"""
-
 def main():
     """Main function"""
     # Parse command line arguments
