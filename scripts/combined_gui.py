@@ -699,7 +699,7 @@ class CombinedCameraShapeTab:
                     target, 
                     model_path=self.yolo_model_path
                 )
-                
+                print("DEBUG: ", self.detected_squares)
                 # Add YOLO model info
                 h, w = self.result_image.shape[:2]
                 model_name = os.path.basename(self.yolo_model_path)
@@ -823,7 +823,7 @@ class CombinedCameraShapeTab:
             
             # Report detected squares
             if self.detected_squares:
-                square_info = ", ".join([f"{color} at ({x},{y})" for x, y, color in self.detected_squares])
+                square_info = ", ".join([f"{color} at ({x},{y}), roation is {rotation}" for x, y, color, rotation in self.detected_squares])
                 self.update_status(f"YOLO detection completed. Found squares: {square_info}")
                 self.map_squares_to_robot_frame()
                 self.pick_place_button.config(state=tk.NORMAL)
@@ -842,7 +842,6 @@ class CombinedCameraShapeTab:
             import traceback
             traceback.print_exc()            
 
-    
     def update_target(self):
         """Update the current target object"""
         self.current_target = self.target_var.get()
@@ -898,7 +897,7 @@ class CombinedCameraShapeTab:
         # Map each square's position
         self.robot_square_positions = []
         for square in self.detected_squares:
-            pixel_x, pixel_y, color = square
+            pixel_x, pixel_y, color  = square
             try:
                 result = map_pixel_to_robot_frame(
                     "/home/dinh/catkin_ws/src/ur3e_control/calibration_images.jpg", pixel_x, pixel_y, 
@@ -942,6 +941,7 @@ class CombinedCameraShapeTab:
                 )
                 robot_x, robot_y = result[0]
                 self.robot_circle_positions.append((robot_x, robot_y, color))
+                print("DEGBUG: Circle position with robot: ", [robot_x, robot_y])
                 self.update_status(f"Mapped circle at ({pixel_x},{pixel_y}) to robot coordinates ({robot_x:.2f},{robot_y:.2f})")
             except Exception as e:
                 self.update_status(f"Error mapping circle: {str(e)}")    
@@ -1006,9 +1006,9 @@ class CombinedCameraShapeTab:
         """Determine dropoff location based on object color and index"""
         # Predefined dropoff positions - note these are angles in degrees, not a preset name
         dropoff_positions = {
-            "red": [-162.37, -82.71, -111.48, -75.72, 90.03, -72.62],
-            "blue": [-145.41, -89.24, -105.50, -75.17, 90.100, -55.42],
-            "yellow": [-131.68, -96.94, -97.32, -75.65, 90.06, 318.31-360]
+            "red": [-162.37, -82.71, -111.48, -75.72, 90.03, -72.62], #-288.71, 46.79
+            "blue": [-145.41, -89.24, -105.50, -75.17, 90.100, -55.42], #311.78, -55.44
+            "yellow": [-131.68, -96.94, -97.32, -75.65, 90.06, 318.31-360]#-311.84, -152.49
         }
         
         # Get position based on color
@@ -1148,7 +1148,6 @@ class CombinedCameraShapeTab:
             return False
 
     def generate_collision_avoidance_path(self, square_index=0, save_csv=True): 
-    
         try: 
             # Check if we have squares mapped
             if not hasattr(self, 'robot_square_positions') or not self.robot_square_positions:
@@ -1166,9 +1165,9 @@ class CombinedCameraShapeTab:
             # === Define Hardcoded Drop-off Locations by Color ===
             # These are X, Y, Z coordinates in the robot's workspace
             dropoff_locations = {
-                "red":    [-0.315, 0.022, 0.04],  # Hardcoded position for red cubes
-                "blue":   [-0.275, 0.062, 0.04],  # Hardcoded position for blue cubes
-                "yellow": [-0.235, 0.102, 0.04],  # Hardcoded position for yellow cubes
+                "red":    [-0.28871, 0.04679, 0.04],  # Hardcoded position for red cubes -288.71, 46.79
+                "blue":   [-0.31178, -0.05544, 0.04],  # Hardcoded position for blue cubes 311.78, -55.44
+                "yellow": [-0.31184, -0.15249, 0.04],  # Hardcoded position for yellow cubes -311.84, -152.49
                 # Add more colors and positions as needed
             }
             
@@ -1179,7 +1178,7 @@ class CombinedCameraShapeTab:
             
             # === Parameters ===
             # Starting position (cube to pick up)
-            P0 = np.array([square_x, square_y, 0.04])  # [x, y, z]
+            P0 = np.array([square_x*0.001, square_y*0.001, 0.120])  # [x, y, z]
             
             # Target position (drop-off location)
             P2 = np.array([dropoff_x, dropoff_y, dropoff_z])  # [x, y, z]
@@ -1188,15 +1187,27 @@ class CombinedCameraShapeTab:
             Q0 = np.array([0, 0, 0, 1])  # [qx, qy, qz, qw]
             
             # Safety parameters
-            safeMargin = 0.05  # extra clearance (m)
-            projectedCylinderRadius = 0.025  # cylinder radius (m)
+            safeMargin = 0.1  # extra clearance (m)
+            projectedCylinderRadius = 0.1  # cylinder radius (m)
             R = projectedCylinderRadius + safeMargin
             zConstant = P0[2]  # keep Z constant throughout the path
             
             # Robot base (always an obstacle)
             base_center = np.array([0.0, 0.0])  # robot-base at origin (XY only)
-            base_R = 0.18  # 175 mm radius → 350 mm Ø
+            base_R = 0.25  # 175 mm radius → 350 mm Ø
             
+            # obstacles = []
+            
+            # # Add detected circles as obstacles
+            # if hasattr(self, 'robot_circle_positions') and self.robot_circle_positions:
+            #     for i, (cx, cy, color) in enumerate(self.robot_circle_positions):
+            #         c_xy = np.array([cx, cy])
+            #         print("Cylinder position:  ", c_xy)
+            #         obstacles.append((c_xy, R, f'cylinder {i} ({color})'))
+            
+            # # Always add robot base as an obstacle
+            # obstacles.append((base_center, base_R, 'robot base'))     
+                  
             # === Helper functions ===
             def wrap_to_pi(angle):
                 return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -1291,19 +1302,22 @@ class CombinedCameraShapeTab:
             # Add detected circles as obstacles
             if hasattr(self, 'robot_circle_positions') and self.robot_circle_positions:
                 for i, (cx, cy, color) in enumerate(self.robot_circle_positions):
-                    C_xy = np.array([cx, cy])
-                    obstacles.append((C_xy, R, f'cylinder {i} ({color})'))
+                    c_xy = np.array([cx, cy])
+                    print("Cylinder position:  ", c_xy)
+                    obstacles.append((c_xy, R, f'cylinder {i} ({color})'))
                     
                     # Check if circles overlap with base
-                    if circles_intersect(C_xy, R, base_center, base_R):
+                    if circles_intersect(c_xy, R, base_center, base_R):
                         self.update_status(f"⚠️ Warning: {color} circle and robot base no-go zones overlap!")
             
             # Always add robot base as an obstacle
             obstacles.append((base_center, base_R, 'robot base'))
             
+            
             # Compute the collision-free path
             self.update_status(f"Computing collision-free path for {square_color} square...")
             pts_xy = compute_detour_sequence(P0_xy, P2_xy, obstacles)
+            print("DEBUG pts_xy: ", pts_xy)
             
             # === Save waypoints ===
             N = pts_xy.shape[0]
@@ -1416,7 +1430,7 @@ class CombinedCameraShapeTab:
                 self.update_status(f"Planning path with {len(waypoints)} waypoints...")
                 
                 # Compute Cartesian path
-                eef_step = 0.1  # 1 cm interpolation
+                eef_step = 0.01  # 1 cm interpolation
                 traj_plan, fraction = group.compute_cartesian_path(
                     waypoints,
                     eef_step
@@ -1429,7 +1443,7 @@ class CombinedCameraShapeTab:
                     )
                     if fraction < 0.7:  # If less than 70% of path is valid, abort
                         self.update_status(f"Path planning failed: insufficient coverage")
-                        self.execute_release_phase(robot_gui)
+                        # self.execute_release_phase(robot_gui)
                         continue
                 
                 # Time-parameterize the trajectory
@@ -1454,7 +1468,7 @@ class CombinedCameraShapeTab:
                 import traceback
                 traceback.print_exc()
                 # Try to safely release if we're holding something
-                self.execute_release_phase(robot_gui)
+                # self.execute_release_phase(robot_gui)
         
         # Return to a safe position when done
         self.update_status("Returning to camera capture position...")

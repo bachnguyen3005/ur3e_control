@@ -4,7 +4,7 @@ import math
 import matplotlib.pyplot as plt
 
 # === Inputs ===
-P0 = np.array([0.17445, -0.26278, 0.04])   # start [x, y, z], cubes position
+P0 = np.array([174.13051021934314, -275.5598274424912, 0.04])   # start [x, y, z], cubes position
 P2 = np.array([-0.315, 0.022, 0.04])       # target [x, y, z], drop off position
 C  = np.array([0.036, -0.17, 0.04])       # cylinder obstacle center [x, y, z], ciricle position
 Q0 = np.array([0, 0, 0, 1])                # quaternion [qx, qy, qz, qw]

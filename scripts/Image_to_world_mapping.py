@@ -282,8 +282,8 @@ if __name__ == "__main__":
     image_path = "/home/dinh/catkin_ws/src/ur3e_control/calibration_images.jpg"
     
     # Example 1: Map a single point
-    pixel_x = 324
-    pixel_y = 296
+    pixel_x = 390
+    pixel_y = 217
     
     try:
         result = map_pixel_to_robot_frame(
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         Tep = transl(-robot_x*0.001, -robot_y*0.001, 0.257) @ rpy2tr(0, pi/2, pi/2)
         print(f"Pixel ({pixel_x}, {pixel_y}) maps to robot frame coordinates ({robot_x:.2f}, {robot_y:.2f}) mm")
         sol, err, flag, out = ikcon(ur3, Tep, q0=q_prefer)
-        print(f"Joint solution (deg): {sol}")
+        print(f"Joint solution (deg): {np.rad2deg(sol)}")
     except Exception as e:
         print(f"Error: {e}")
     
