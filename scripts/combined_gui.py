@@ -238,6 +238,15 @@ class CombinedCameraShapeTab:
         )
         self.collision_pick_place_button.pack(fill=tk.X, pady=5)
         
+        # Pick and place button
+        self.pick_place_with_roation_button = ttk.Button(
+            self.controls_frame,
+            text="Pick and Place Squares For Custom YOLO",
+            command=self.pick_and_place_squares_with_rotation,
+            state=tk.DISABLED
+        )
+        self.pick_place_with_roation_button.pack(fill=tk.X, pady=10)
+        
         # Instructions
         ttk.Separator(self.controls_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
         ttk.Label(self.controls_frame, text="Instructions:").pack(anchor=tk.W)
@@ -611,11 +620,13 @@ class CombinedCameraShapeTab:
             if self.detected_squares:
                 self.map_squares_to_robot_frame()
                 self.pick_place_button.config(state=tk.NORMAL)
+                self.pick_place_with_roation_button.config(state=tk.DISABLED)
                 self.collision_pick_place_button.config(state=tk.NORMAL)
                 self.update_status(f"Found {len(self.detected_squares)} squares. Ready for pick and place.")
                
             else:
                 self.pick_place_button.config(state=tk.DISABLED)
+                self.pick_place_with_roation_button.config(state=tk.DISABLED)
                 self.collision_pick_place_button.config(state=tk.DISABLED)
                 self.update_status("No squares detected.")
             
@@ -718,9 +729,11 @@ class CombinedCameraShapeTab:
                 self.update_status(f"YOLO detection completed. Found squares: {square_info}")
                 self.map_squares_to_robot_frame()
                 self.pick_place_button.config(state=tk.NORMAL)
+                self.pick_place_with_roation_button.config(state=tk.NORMAL)
                 self.collision_pick_place_button.config(state=tk.NORMAL)
             else:
                 self.pick_place_button.config(state=tk.DISABLED)
+                self.pick_place_with_roation_button.config(state=tk.DISABLED)
                 self.collision_pick_place_button.config(state=tk.DISABLED)
                 self.update_status(f"YOLO detection completed for target: {target}. No squares found.")
             
@@ -827,9 +840,11 @@ class CombinedCameraShapeTab:
                 self.update_status(f"YOLO detection completed. Found squares: {square_info}")
                 self.map_squares_to_robot_frame()
                 self.pick_place_button.config(state=tk.NORMAL)
+                self.pick_place_with_roation_button.config(state=tk.NORMAL)
                 self.collision_pick_place_button.config(state=tk.NORMAL)
             else:
                 self.pick_place_button.config(state=tk.DISABLED)
+                self.pick_place_with_roation_button.config(state=tk.DISABLED)
                 self.collision_pick_place_button.config(state=tk.DISABLED)
                 self.update_status(f"YOLO detection completed for target: {target}. No squares found.")
             
@@ -897,14 +912,27 @@ class CombinedCameraShapeTab:
         # Map each square's position
         self.robot_square_positions = []
         for square in self.detected_squares:
-            pixel_x, pixel_y, color  = square
+            if len(square) == 3:
+                pixel_x, pixel_y, color = square
+                rotation = 0 
+            elif len(square) == 4:
+                pixel_x, pixel_y, color, rotation = square
+            else:
+                self.update_status(f"Warning: Unexpected square format: {square}")
+                continue    
             try:
                 result = map_pixel_to_robot_frame(
                     "/home/dinh/catkin_ws/src/ur3e_control/calibration_images.jpg", pixel_x, pixel_y, 
                     camera_intrinsics, marker_size_mm
                 )
                 robot_x, robot_y = result[0]
-                self.robot_square_positions.append((robot_x, robot_y, color))
+                
+                # Include rotation in robot square positions if available
+                if len(square) == 4:
+                    self.robot_square_positions.append((robot_x, robot_y, color, rotation))
+                else:
+                    self.robot_square_positions.append((robot_x, robot_y, color))
+                    
                 self.update_status(f"Mapped square at ({pixel_x},{pixel_y}) to robot coordinates ({robot_x:.2f},{robot_y:.2f})")
             except Exception as e:
                 self.update_status(f"Error mapping square: {str(e)}")
@@ -960,8 +988,14 @@ class CombinedCameraShapeTab:
         robot_gui = self.robot_gui
         self.update_status("Found robot control interface. Proceeding with pick and place.")
         
-        # Execute sequence for each square
-        for i, (robot_x, robot_y, color) in enumerate(self.robot_square_positions):
+        
+        sorted_squares = sorted(
+        self.robot_square_positions, 
+        key=lambda pos: pos[0]**2 + pos[1]**2  # Euclidean distance squared 
+        )
+        print(f"Squares sorted by distance from robot base. Processing {len(sorted_squares)} squares.")
+        
+        for i, (robot_x, robot_y, color) in enumerate(sorted_squares):
             self.update_status(f"Processing {color} square at ({robot_x:.2f}, {robot_y:.2f})...")
             
             # Generate pickup pose
@@ -972,6 +1006,46 @@ class CombinedCameraShapeTab:
             
             # Execute the pick and place sequence
             success = self.execute_pick_and_place(robot_gui, pickup_pose, dropoff_pose)
+            
+            if success:
+                self.update_status(f"Successfully picked and placed {color} square")
+            else:
+                self.update_status(f"Failed to pick and place {color} square")
+                
+    def pick_and_place_squares_with_rotation(self):
+        if not hasattr(self, 'robot_square_positions') or not self.robot_square_positions:
+            self.update_status("No squares mapped to robot coordinates")
+            return
+        
+        # Access the robot_gui through the reference set in the CombinedGUI.__init__ method
+        if not hasattr(self, 'robot_gui') or self.robot_gui is None:
+            self.update_status("Robot control not available - direct reference not set")
+            return
+        
+        robot_gui = self.robot_gui
+        self.update_status("Found robot control interface. Proceeding with pick and place.")
+        
+        sorted_squares = sorted(
+        self.robot_square_positions, 
+        key=lambda pos: pos[0]**2 + pos[1]**2  # Euclidean distance squared 
+        )
+        print(f"Squares sorted by distance from robot base. Processing {len(sorted_squares)} squares.")
+        
+        for i, (robot_x, robot_y, color, rotation) in enumerate(sorted_squares):
+            self.update_status(f"Processing {color} square at ({robot_x:.2f}, {robot_y:.2f})...")
+            
+            # Generate pickup pose
+            pickup_pose = self.calculate_pickup_pose_with_higher_Z(robot_x, robot_y)
+            if(rotation > 0):
+                rotation = rotation
+            else:
+                rotation = -rotation
+            pickup_pose[5] = pickup_pose[5] + rotation
+            # Generate dropoff pose based on color and index
+            dropoff_pose = self.determine_dropoff_location(color, i)
+            
+            # Execute the pick and place sequence
+            success = self.execute_pick_and_place_with_rotation(robot_gui, pickup_pose, dropoff_pose)
             
             if success:
                 self.update_status(f"Successfully picked and placed {color} square")
@@ -992,6 +1066,30 @@ class CombinedCameraShapeTab:
         # Calculate end-effector transform for the pickup position
         # Note: Coordinate conversion and offset adjustments may be needed
         Tep = transl(-(robot_x+15)*0.001, -(robot_y+10)*0.001, 0.257+0.015) @ rpy2tr(0, pi/2, pi/2)
+        
+        # Preferred joint configuration for IK solution
+        q_prefer = np.deg2rad(np.array([61.26, -81.48, -92.51, -91.86, 85.49, 6.96]))
+        
+        # Solve inverse kinematics
+        sol, err, flag, out = ikcon(ur3, Tep, q0=q_prefer)
+        
+        # Return joint angles in degrees
+        return np.rad2deg(sol)
+
+    def calculate_pickup_pose_with_higher_Z(self, robot_x, robot_y):
+        """Calculate robot joint positions for picking up an object"""
+        import numpy as np
+        from math import pi
+        import roboticstoolbox as rtb
+        from spatialmath.base import transl, rpy2tr
+        from ikcon import ikcon
+        
+        # Create robot model
+        ur3 = rtb.models.UR3()
+        
+        # Calculate end-effector transform for the pickup position
+        # Note: Coordinate conversion and offset adjustments may be needed
+        Tep = transl(-(robot_x+15)*0.001, -(robot_y+10)*0.001, 0.257+0.015+0.02) @ rpy2tr(0, pi/2, pi/2)
         
         # Preferred joint configuration for IK solution
         q_prefer = np.deg2rad(np.array([61.26, -81.48, -92.51, -91.86, 85.49, 6.96]))
@@ -1097,6 +1195,79 @@ class CombinedCameraShapeTab:
             traceback.print_exc()
             return False
 
+    def execute_pick_and_place_with_rotation(self, robot_gui, pickup_pose, dropoff_pose):
+        """Execute the pick and place sequence using the robot control with intermediate poses"""
+        try:
+            import time  # Import time module for delays
+        
+            # Define delay times in seconds
+            move_delay = 1.0      # Delay after robot movement
+            gripper_delay = 1.0   # Delay after gripper operation
+            
+            capture_image_pose = [-62.71, -88.97, -31.19, -149.76, 89.85, 27.15]
+            
+            self.update_status("Opening gripper...")
+            robot_gui.set_gripper_width("0.1")
+            robot_gui.send_gripper_command()
+            time.sleep(gripper_delay)
+            
+
+            # 3. Move to the actual pickup position
+            self.update_status("Moving to pickup position...")
+            robot_gui.set_joint_values(pickup_pose)
+            robot_gui.move_robot()
+            
+            #4. Move the robot down along Z axis 
+            self.update_status("Moving along Z axis down a bit...")
+            self.move_robot_along_z(-20)
+            
+            # 4. Close gripper to grasp object
+            self.update_status("Closing gripper...")
+            robot_gui.set_gripper_width("0.056")
+            robot_gui.send_gripper_command()
+            time.sleep(gripper_delay)  # Wait for movement to complete
+            
+            # 5. Lift object back to pre-pickup (post-pickup) position
+            self.update_status("Lifting object...")
+            self.move_robot_along_z(60)
+            
+            # # 7. Move to pre-dropoff position
+            self.update_status("Moving to pre-dropoff position...")
+            pre_dropoff_pose = dropoff_pose.copy()
+            pre_dropoff_pose[2] += 20  # Adjust height for pre-dropoff
+            robot_gui.set_joint_values(pre_dropoff_pose)
+            robot_gui.move_robot()
+            time.sleep(move_delay)  # Wait for movement to complete
+            
+            # 8. Move to final dropoff position
+            self.update_status("Moving to dropoff position...")
+            robot_gui.set_joint_values(dropoff_pose)
+            robot_gui.move_robot()
+            
+            # 9. Open gripper to release object
+            self.update_status("Opening gripper...")
+            robot_gui.set_gripper_width("0.1")
+            robot_gui.send_gripper_command()
+            time.sleep(gripper_delay)
+            
+            # # 10. Move back to pre-dropoff position
+            # self.update_status("Moving to post-dropoff position...")
+            # robot_gui.set_joint_values(pre_dropoff_pose)
+            # robot_gui.move_robot()
+            
+            # 11. Return to intermediate pose
+            self.update_status("Returning to intermediate pose...")
+            robot_gui.set_joint_values(capture_image_pose)
+            robot_gui.move_robot()
+            
+            self.update_status("Pick and place sequence completed successfully!")
+            return True
+        except Exception as e:
+            self.update_status(f"Error during pick and place: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def execute_pick_phase(self, robot_gui, pickup_pose):
         """Execute the pick and place sequence using the robot control with intermediate poses"""
         try:
@@ -1147,206 +1318,178 @@ class CombinedCameraShapeTab:
             traceback.print_exc()
             return False
 
-    def generate_collision_avoidance_path(self, square_index=0, save_csv=True): 
-        try: 
-            # Check if we have squares mapped
+
+# Updated generate_collision_avoidance_path without filtering outlier circles
+
+    def generate_collision_avoidance_path(self, square_index=0, save_csv=True):
+        """
+        RRT-based waypoint generator for UR3e obstacle avoidance.
+        Uses detected square as start, its color-based drop-off as goal,
+        and your detected circles plus the robot base as inflated obstacles.
+        """
+        import csv, math, random, os
+        from collections import namedtuple
+
+        # RRT parameters
+        MAX_ITER, STEP_SIZE, GOAL_THRESHOLD, GOAL_SAMPLE_RATE = 5000, 0.005, 0.05, 0.30
+        SMOOTH_ITER, INFLATION_MARGIN = 5000, 0.022
+        QX, QY, QZ, QW = 0.0, 0.0, 0.0, 1.0
+        CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "waypointsMatrix.csv")
+
+        # Enable debug output (prints only)
+        DEBUG = True
+
+        try:
+            # Raw detection debug (pixel vs mapped)
+            if DEBUG and hasattr(self, 'detected_circles_pixels'):
+                print("[DEBUG] Raw circles (pixels):", self.detected_circles_pixels)
+            # always show mapped circle list
+            raw_circles = getattr(self, 'robot_circle_positions', [])
+            if DEBUG:
+                print("[DEBUG] Mapped circles (meters):", raw_circles)
+                print(f"[DEBUG] Total circles detected: {len(raw_circles)}")
+
+            # Input checks
             if not hasattr(self, 'robot_square_positions') or not self.robot_square_positions:
                 self.update_status("No squares mapped to robot coordinates")
                 return False, None
-            
-            # === Get Input Parameters ===
-            # Get square position (start)
             if square_index >= len(self.robot_square_positions):
                 self.update_status(f"Error: Invalid square index {square_index}")
                 return False, None
-            
-            square_x, square_y, square_color = self.robot_square_positions[square_index]
-            
-            # === Define Hardcoded Drop-off Locations by Color ===
-            # These are X, Y, Z coordinates in the robot's workspace
-            dropoff_locations = {
-                "red":    [-0.28871, 0.04679, 0.04],  # Hardcoded position for red cubes -288.71, 46.79
-                "blue":   [-0.31178, -0.05544, 0.04],  # Hardcoded position for blue cubes 311.78, -55.44
-                "yellow": [-0.31184, -0.15249, 0.04],  # Hardcoded position for yellow cubes -311.84, -152.49
-                # Add more colors and positions as needed
+
+            # Start & goal
+            square_x, square_y, color = self.robot_square_positions[square_index]
+            square_x = square_x/1000
+            square_y = square_y/1000
+            dropoffs = {
+                "red":    (-0.315, 0.022, 0.04),
+                "blue":   (-0.275, 0.062, 0.04),
+                "yellow": (-0.235, 0.102, 0.04),
             }
-            
-            # Get the drop-off location based on color
-            if square_color.lower() in dropoff_locations:
-                dropoff_x, dropoff_y, dropoff_z = dropoff_locations[square_color.lower()]
-                self.update_status(f"Using hardcoded drop-off location for {square_color} cube")
-            
-            # === Parameters ===
-            # Starting position (cube to pick up)
-            P0 = np.array([square_x*0.001, square_y*0.001, 0.120])  # [x, y, z]
-            
-            # Target position (drop-off location)
-            P2 = np.array([dropoff_x, dropoff_y, dropoff_z])  # [x, y, z]
-            
-            # Default quaternion orientation
-            Q0 = np.array([0, 0, 0, 1])  # [qx, qy, qz, qw]
-            
-            # Safety parameters
-            safeMargin = 0.1  # extra clearance (m)
-            projectedCylinderRadius = 0.1  # cylinder radius (m)
-            R = projectedCylinderRadius + safeMargin
-            zConstant = P0[2]  # keep Z constant throughout the path
-            
-            # Robot base (always an obstacle)
-            base_center = np.array([0.0, 0.0])  # robot-base at origin (XY only)
-            base_R = 0.25  # 175 mm radius → 350 mm Ø
-            
-            # obstacles = []
-            
-            # # Add detected circles as obstacles
-            # if hasattr(self, 'robot_circle_positions') and self.robot_circle_positions:
-            #     for i, (cx, cy, color) in enumerate(self.robot_circle_positions):
-            #         c_xy = np.array([cx, cy])
-            #         print("Cylinder position:  ", c_xy)
-            #         obstacles.append((c_xy, R, f'cylinder {i} ({color})'))
-            
-            # # Always add robot base as an obstacle
-            # obstacles.append((base_center, base_R, 'robot base'))     
-                  
-            # === Helper functions ===
-            def wrap_to_pi(angle):
-                return (angle + math.pi) % (2 * math.pi) - math.pi
+            if color.lower() not in dropoffs:
+                self.update_status(f"No drop-off defined for {color}, defaulting to red")
+            gx, gy, drop_z = dropoffs.get(color.lower(), dropoffs["red"])
 
-            def check_collision(p0_xy, p1_xy, c_xy, radius):
-                """True if the segment p0→p1 comes within 'radius' of c_xy."""
-                v = p1_xy - p0_xy
-                w = c_xy - p0_xy
-                t = np.clip(np.dot(w, v) / np.dot(v, v), 0.0, 1.0)
-                closest = p0_xy + t*v
-                return np.linalg.norm(c_xy - closest) < radius
+            # Safe travel height
+            table_h = 0.01    # table height (m)
+            grip_len = 0.24   # gripper length (m)
+            carry_clear = 0.02  # extra clearance (m)
+            travel_z = table_h + grip_len + carry_clear
 
-            def compute_tangent_path(p0_xy, p2_xy, c_xy, radius, n_intermediate=1):
-                """
-                Return a smooth detour [p0, T1, mid…, T2, p2] around circle at c_xy.
-                Ensures T1 is the tangent closest to p0 to avoid any 'bounce'.
-                """
-                # angles from center to endpoints
-                θ0 = math.atan2(p0_xy[1]-c_xy[1], p0_xy[0]-c_xy[0])
-                θ2 = math.atan2(p2_xy[1]-c_xy[1], p2_xy[0]-c_xy[0])
-                d0, d2 = np.linalg.norm(p0_xy - c_xy), np.linalg.norm(p2_xy - c_xy)
-                α0 = math.acos(radius / d0)
-                α2 = math.acos(radius / d2)
-
-                cand0 = [θ0 + α0, θ0 - α0]
-                cand2 = [θ2 + α2, θ2 - α2]
-
-                # pick the pair whose absolute angular sweep is smallest
-                best = float('inf')
-                sel0 = sel2 = None
-                for a0 in cand0:
-                    for a2 in cand2:
-                        sweep = wrap_to_pi(a2 - a0)
-                        if abs(sweep) < best:
-                            best, sel0, sel2 = abs(sweep), a0, a2
-
-                # compute the two tangent points
-                T1 = c_xy + radius * np.array([math.cos(sel0), math.sin(sel0)])
-                T2 = c_xy + radius * np.array([math.cos(sel2), math.sin(sel2)])
-
-                # if T1 is farther from p0 than T2, swap them (so we always go to the closer one first)
-                if np.linalg.norm(p0_xy - T1) > np.linalg.norm(p0_xy - T2):
-                    T1, T2 = T2, T1
-                    sel0, sel2 = sel2, sel0
-
-                # now sample a few points along the shorter arc from sel0→sel2
-                Δθ = wrap_to_pi(sel2 - sel0)
-                ts = np.linspace(0, 1, n_intermediate+2)  # includes endpoints
-                arc_pts = [c_xy + radius * np.array([math.cos(sel0 + t*Δθ),
-                                                math.sin(sel0 + t*Δθ)])
-                        for t in ts]
-
-                # build [p0, arc_pts..., p2]
-                return np.vstack([p0_xy] + arc_pts + [p2_xy])
-
-            def circles_intersect(c1, r1, c2, r2):
-                return np.linalg.norm(c1 - c2) < (r1 + r2)
-
-            def projection_t(p0, p1, c):
-                v = p1 - p0
-                w = c - p0
-                return np.clip(np.dot(w, v) / np.dot(v, v), 0.0, 1.0)
-
-            def compute_detour_sequence(p0, p2, obstacles):
-                hits = []
-                for c_xy, radius, name in obstacles:
-                    if check_collision(p0, p2, c_xy, radius):
-                        hits.append((projection_t(p0, p2, c_xy), c_xy, radius, name))
-                if not hits:
-                    return np.vstack([p0, p2])
-
-                hits.sort(key=lambda x: x[0])
-                waypoints = [p0]
-                current = p0
-
-                for _, c_xy, radius, name in hits:
-                    self.update_status(f"Collision with {name} → detouring around it")
-                    detour = compute_tangent_path(current, p2, c_xy, radius, n_intermediate=1)
-                    # detour = [current, T1, mid..., T2, p2]; keep only T1, mid…, T2
-                    waypoints.extend(detour[1:-1])
-                    current = detour[-2]  # last arc‐point before p2
-
-                waypoints.append(p2)
-                return np.vstack(waypoints)
-            
-            # === Main flow ===
-            P0_xy, P2_xy = P0[:2], P2[:2]
-            
-            # Build the obstacles list
+            # Build obstacle list (including all circles)
+            Ob = namedtuple("Ob", ["x","y","radius"])
             obstacles = []
-            
-            # Add detected circles as obstacles
-            if hasattr(self, 'robot_circle_positions') and self.robot_circle_positions:
-                for i, (cx, cy, color) in enumerate(self.robot_circle_positions):
-                    c_xy = np.array([cx, cy])
-                    print("Cylinder position:  ", c_xy)
-                    obstacles.append((c_xy, R, f'cylinder {i} ({color})'))
-                    
-                    # Check if circles overlap with base
-                    if circles_intersect(c_xy, R, base_center, base_R):
-                        self.update_status(f"⚠️ Warning: {color} circle and robot base no-go zones overlap!")
-            
-            # Always add robot base as an obstacle
-            obstacles.append((base_center, base_R, 'robot base'))
-            
-            
-            # Compute the collision-free path
-            self.update_status(f"Computing collision-free path for {square_color} square...")
-            pts_xy = compute_detour_sequence(P0_xy, P2_xy, obstacles)
-            print("DEBUG pts_xy: ", pts_xy)
-            
-            # === Save waypoints ===
-            N = pts_xy.shape[0]
-            xyz = np.hstack([pts_xy, np.full((N, 1), zConstant)])
-            quat = np.tile(Q0, (N, 1))
-            df = pd.DataFrame(np.hstack([xyz, quat]),
-                            columns=['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
-            
-            if save_csv:
-                # Get scripts directory path
-                scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
-                os.makedirs(scripts_dir, exist_ok=True)
-                
-                csv_path = os.path.join(scripts_dir, "waypointsMatrix.csv")
-                df.to_csv(csv_path, index=False)
-                self.update_status(f"Saved waypoints to {csv_path}")
-            
-            # === Visualize the path if requested ===
-            self.update_status(f"Generated collision-free path with {N} waypoints")
-            
-            # Return success and the DataFrame
-            return True, df   
-    
+            for cx, cy, _ in raw_circles:
+                obstacles.append(Ob(cx/1000, cy/1000, 0.05))
+            obstacles.append(Ob(0.0, 0.0, 0.18))  # robot base
+
+            # Helper functions
+            def dist(a, b): return math.hypot(a[0] - b[0], a[1] - b[1])
+            def steer(fr, to):
+                theta = math.atan2(to[1] - fr[1], to[0] - fr[0])
+                return (fr[0] + STEP_SIZE * math.cos(theta), fr[1] + STEP_SIZE * math.sin(theta))
+            def seg_coll(p1, p2, center, r):
+                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                if dx == 0 and dy == 0:
+                    return dist(p1, center) <= r
+                t = max(0, min(1, ((center[0] - p1[0]) * dx + (center[1] - p1[1]) * dy) / (dx*dx + dy*dy)))
+                closest = (p1[0] + t*dx, p1[1] + t*dy)
+                return dist(closest, center) <= r
+            def collides(p1, p2):
+                for o in obstacles:
+                    if seg_coll(p1, p2, (o.x, o.y), o.radius + INFLATION_MARGIN):
+                        return True
+                return False
+
+            # Debug prints for RRT parameters and workspace
+            if DEBUG:
+                sg_dist = dist((square_x, square_y), (gx, gy))
+                print(f"[DEBUG] Start: ({square_x:.3f}, {square_y:.3f})")
+                print(f"[DEBUG] Goal:  ({gx:.3f}, {gy:.3f}) drop_z={drop_z:.3f}, travel_z={travel_z:.3f}")
+                print(f"[DEBUG] Distance S→G: {sg_dist:.3f} m")
+                xs = [square_x, gx] + [o.x for o in obstacles]
+                ys = [square_y, gy] + [o.y for o in obstacles]
+                min_x, max_x = min(xs) - 0.1, max(xs) + 0.1
+                min_y, max_y = min(ys) - 0.1, max(ys) + 0.1
+                print(f"[DEBUG] Sampling X: [{min_x:.3f}, {max_x:.3f}], Y: [{min_y:.3f}, {max_y:.3f}]")
+                print("[DEBUG] Obstacles (inflated):")
+                for o in obstacles:
+                    print(f"  - ({o.x:.3f}, {o.y:.3f}), r={o.radius:.3f}→inf={o.radius+INFLATION_MARGIN:.3f}")
+
+            # Build RRT
+            class Node:
+                def __init__(self, x, y, parent=None): self.x, self.y, self.parent = x, y, parent
+                def pt(self): return (self.x, self.y)
+
+            start_node = Node(square_x, square_y)
+            nodes = [start_node]
+            goal_node = None
+
+            # Compute sampling bounds
+            xs = [square_x, gx] + [o.x for o in obstacles]
+            ys = [square_y, gy] + [o.y for o in obstacles]
+            min_x, max_x = min(xs) - 0.1, max(xs) + 0.1
+            min_y, max_y = min(ys) - 0.1, max(ys) + 0.1
+
+            # RRT loop
+            for _ in range(MAX_ITER):
+                rnd = (gx, gy) if random.random() < GOAL_SAMPLE_RATE else (
+                    random.uniform(min_x, max_x), random.uniform(min_y, max_y)
+                )
+                nearest = min(nodes, key=lambda n: dist(n.pt(), rnd))
+                new_pt = steer(nearest.pt(), rnd)
+                if collides(nearest.pt(), new_pt): continue
+                new_node = Node(new_pt[0], new_pt[1], nearest)
+                nodes.append(new_node)
+                if dist(new_pt, (gx, gy)) < GOAL_THRESHOLD and not collides(new_pt, (gx, gy)):
+                    goal_node = Node(gx, gy, new_node)
+                    break
+            if goal_node is None:
+                self.update_status("RRT failed to find path in time")
+                return False, None
+
+            # Extract & smooth path
+            path, n = [], goal_node
+            while n:
+                path.append((n.x, n.y))
+                n = n.parent
+            path.reverse()
+            def smooth(path):
+                p = list(path)
+                if len(p) < 3: return p
+                for _ in range(SMOOTH_ITER):
+                    i, j = random.randrange(len(p)-1), random.randrange(len(p))
+                    if j <= i+1: continue
+                    if not collides(p[i], p[j]): p = p[:i+1] + p[j:]
+                return p
+            smooth_path = smooth(path)
+
+            # Save waypoints
+            os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+            with open(CSV_PATH, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['x','y','z','qx','qy','qz','qw'])
+                for idx, (x, y) in enumerate(smooth_path):
+                    z = travel_z if idx < len(smooth_path)-1 else drop_z
+                    writer.writerow([f"{x:.6f}", f"{y:.6f}", f"{z:.6f}", QX, QY, QZ, QW])
+            self.update_status(f"Saved {len(smooth_path)} RRT waypoints to {CSV_PATH}")
+
+            # Return DataFrame
+            import pandas as pd
+            df = pd.DataFrame({
+                'x': [pt[0] for pt in smooth_path],
+                'y': [pt[1] for pt in smooth_path],
+                'z': [travel_z]*(len(smooth_path)-1) + [drop_z],
+                'qx':[QX]*len(smooth_path), 'qy':[QY]*len(smooth_path),
+                'qz':[QZ]*len(smooth_path), 'qw':[QW]*len(smooth_path),
+            })
+            return True, df
+
         except Exception as e:
             self.update_status(f"Error generating collision avoidance path: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
             return False, None
-        
+  
     def pick_and_place_with_collision_avoidance(self):
         if not hasattr(self, 'robot_square_positions') or not self.robot_square_positions:
             self.update_status("No squares mapped to robot coordinates")
@@ -1377,6 +1520,11 @@ class CombinedCameraShapeTab:
             self.update_status(f"Failed to initialize MoveIt: {str(e)}")
             return
         
+        # # Sort squares by distance from robot base (0,0)
+        # sorted_squares = sorted(
+        # enumerate(self.robot_square_positions), 
+        # key=lambda item: item[1][0]**2 + item[1][1]**2  # Euclidean distance squared
+        # )
         # Execute sequence for each square
         for i, (robot_x, robot_y, color) in enumerate(self.robot_square_positions):
             self.update_status(f"Processing {color} square at ({robot_x:.2f}, {robot_y:.2f}) with collision avoidance...")
@@ -1477,7 +1625,83 @@ class CombinedCameraShapeTab:
         robot_gui.move_robot()
         
         self.update_status("Pick and place with collision avoidance completed")
-    
+ 
+    def move_robot_along_z(self, distance_mm):
+        # Convert millimeters to meters for internal calculations
+        distance_m = distance_mm / 1000.0
+        
+        # Import required modules
+        import copy
+        import rospy
+        import moveit_commander
+        from geometry_msgs.msg import Pose
+        import sys
+        
+        # Initialize MoveIt (if not already initialized)
+        try:
+            moveit_commander.roscpp_initialize(sys.argv)
+            group = moveit_commander.MoveGroupCommander("manipulator")
+            self.update_status("MoveIt initialized successfully")
+        except Exception as e:
+            self.update_status(f"Failed to initialize MoveIt: {str(e)}")
+            return False
+        
+        try:
+            start_pose = group.get_current_pose().pose
+            group.set_max_velocity_scaling_factor(0.5)
+            group.set_max_acceleration_scaling_factor(0.1)
+            
+            waypoints = []
+            
+            target_pose = copy.deepcopy(start_pose)
+            target_pose.position.z += distance_m 
+            
+            waypoints.append(target_pose)
+            
+            self.update_status(f"Planning path to move {distance_mm:.1f}mm along Z axis...")
+            
+            # Compute Cartesian path
+            eef_step = 0.01  # 1 cm interpolation
+            jump_threshold = 0.0  # Disable jump threshold for smoother motion
+            traj_plan, fraction = group.compute_cartesian_path(
+                waypoints,
+                eef_step,
+                True
+            )
+            
+            if fraction < 0.99:
+                self.update_status(
+                    f"Warning: Only {fraction*100:.1f}% of the Cartesian path was planned. "
+                    "Check waypoint reachability."
+                )
+                if fraction < 0.7:  # If less than 70% of path is valid, abort
+                    self.update_status(f"Path planning failed: insufficient coverage")
+                    return False
+            
+            # Time-parameterize the trajectory
+            current_state = group.get_current_state()
+            timed_plan = group.retime_trajectory(
+                current_state,
+                traj_plan,
+                velocity_scaling_factor=0.1
+            )
+            
+            # Execute the path
+            self.update_status(f"Moving {distance_mm:.1f}mm along Z axis...")
+            execution_success = group.execute(timed_plan, wait=True)
+            
+            if execution_success:
+                self.update_status(f"Successfully moved {distance_mm:.1f}mm along Z axis")
+                return True
+            else:
+                self.update_status(f"Failed to execute Z-axis movement")
+                return False
+                
+        except Exception as e:
+            self.update_status(f"Error during Z-axis movement: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
 class UR3eGUITab:
     def __init__(self, parent):
         self.parent = parent
